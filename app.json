@@ -13,17 +13,53 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.shingyeeang.mybudgetapp"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.shingyeeang.mybudgetapp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "react-native-android-widget",
+        {
+          "widgetName": "MyBudgetWidgets",
+          "ios": {
+            "useNse": false
+          },
+          "widgets": [
+            {
+              "name": "InfoWidget",
+              "label": "Budget Overview",
+              "minWidth": "250dp",
+              "minHeight": "110dp",
+              "description": "Shows today's expense and budget.",
+              "previewImage": "./assets/adaptive-icon.png",
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            },
+            {
+              "name": "ActionWidget",
+              "label": "Quick Add",
+              "minWidth": "60dp",
+              "minHeight": "60dp",
+              "description": "Quickly add a transaction.",
+              "previewImage": "./assets/adaptive-icon.png",
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
+      ],
+      "expo-quick-actions"
+    ]
   }
 }

@@ -1,30 +1,222 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView, Platform, Modal, TextInput, KeyboardAvoidingView, Alert, Dimensions, ImageBackground, Image } from 'react-native';
-import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, TouchableWithoutFeedback, ScrollView, SafeAreaView, Platform, Modal, TextInput, KeyboardAvoidingView, Alert, Dimensions, ImageBackground, Image, Animated } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PieChart, LineChart } from 'react-native-chart-kit';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as QuickActions from 'expo-quick-actions';
+// import { requestWidgetUpdate } from 'react-native-android-widget';
+// import { InfoWidget } from './widgets/InfoWidget';
+import { supabase } from './lib/supabase';
+import { SyncService } from './lib/SyncService';
+import AuthScreen from './screens/AuthScreen';
 
 // --- 预设分类数据 ---
 const DEFAULT_CATEGORIES = {
   expense: [
-    { id: 'food', name: '餐饮', icon: '🍔' },
-    { id: 'transport', name: '交通', icon: '🚕' },
-    { id: 'shopping', name: '购物', icon: '🛍️' },
-    { id: 'entertainment', name: '娱乐', icon: '🎮' },
-    { id: 'housing', name: '居住', icon: '🏠' },
-    { id: 'medical', name: '医疗', icon: '💊' },
-    { id: 'other', name: '其他', icon: '💸' },
+    { id: 'food', name: '餐饮', icon: '🍔', color: '#FF9F43' }, // Orange
+    { id: 'transport', name: '交通', icon: '🚕', color: '#54A0FF' }, // Blue
+    { id: 'shopping', name: '购物', icon: '🛍️', color: '#FF6B6B' }, // Pink/Red
+    { id: 'entertainment', name: '娱乐', icon: '🎮', color: '#5F27CD' }, // Purple
+    { id: 'housing', name: '居住', icon: '🏠', color: '#48DBFB' }, // Cyan
+    { id: 'medical', name: '医疗', icon: '💊', color: '#EE5253' }, // Red
+    { id: 'transfer', name: '转账', icon: '↔️', color: '#8E44AD' }, // Purple (Transfer)
+    { id: 'other', name: '其他', icon: '💸', color: '#8395A7' }, // Grey
   ],
   income: [
-    { id: 'salary', name: '工资', icon: '💰' },
-    { id: 'invest', name: '理财', icon: '📈' },
-    { id: 'parttime', name: '兼职', icon: '⚡' },
-    { id: 'other', name: '其他', icon: '💵' },
+    { id: 'salary', name: '工资', icon: '💰', color: '#10AC84' }, // Green
+    { id: 'invest', name: '理财', icon: '📈', color: '#F3CA20' }, // Gold
+    { id: 'parttime', name: '兼职', icon: '⚡', color: '#22A6B3' }, // Teal
+    { id: 'transfer', name: '转账', icon: '↔️', color: '#8E44AD' }, // Purple (Transfer)
+    { id: 'other', name: '其他', icon: '💵', color: '#8395A7' }, // Grey
   ]
 };
 
+// --- Theme Definition (Phase 18) ---
+const theme = {
+  colors: {
+    background: '#0F172A', // Deep Navy (Main BG)
+    surface: '#1E293B',    // Lighter Navy (Cards)
+    surfaceHighlight: '#334155', // Pressed/Active
+    primary: '#6366F1',    // Indigo (Actions)
+    secondary: '#64748B',  // Grey (Inactive)
+    success: '#10B981',    // Emerald (Income)
+    danger: '#EF4444',     // Red (Expense)
+    text: '#F8FAFC',       // White (Primary Text)
+    textSecondary: '#94A3B8', // Light Grey (Secondary Text)
+    border: '#334155',     // Borders
+  },
+  spacing: { s: 8, m: 16, l: 24 },
+  borderRadius: 20,
+};
+
+
+// --- Reusable ScaleButton (Phase 16) ---
+
+const FadeInView = (props) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current;  // Initial value for opacity: 0
+  const slideAnim = useRef(new Animated.Value(20)).current; // Initial value for translateY: 20
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true,
+      })
+    ]).start();
+  }, [fadeAnim, slideAnim]);
+
+  return (
+    <Animated.View                 // Special animatable View
+      style={{
+        ...props.style,
+        opacity: fadeAnim,         // Bind opacity to animated value
+        transform: [{ translateY: slideAnim }] // Bind transform
+      }}
+    >
+      {props.children}
+    </Animated.View>
+  );
+}
+
+
+const ScaleButton = ({ onPress, style, children }) => {
+  const scaleValue = useRef(new Animated.Value(1)).current;
+
+  const onPressIn = () => {
+    Animated.spring(scaleValue, {
+      toValue: 0.95,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const onPressOut = () => {
+    Animated.spring(scaleValue, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <TouchableWithoutFeedback onPressIn={onPressIn} onPressOut={onPressOut} onPress={onPress}>
+      <Animated.View style={[style, { transform: [{ scale: scaleValue }] }]}>
+        {children}
+      </Animated.View>
+    </TouchableWithoutFeedback>
+  );
+};
+
+
+
+const CustomAlert = ({ visible, title, message, buttons, onClose }) => {
+  return (
+    <Modal transparent={true} visible={visible} animationType="fade" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ width: '80%', backgroundColor: theme.colors.surface, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: theme.colors.border }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: theme.colors.text, marginBottom: 10, textAlign: 'center' }}>{title}</Text>
+          <Text style={{ fontSize: 16, color: theme.colors.textSecondary, marginBottom: 24, textAlign: 'center', lineHeight: 22 }}>{message}</Text>
+
+          <View style={{ flexDirection: 'row', justifyContent: 'center' }}>
+            {buttons.map((btn, index) => (
+              <TouchableOpacity
+                key={index}
+                style={{
+                  flex: 1,
+                  backgroundColor: btn.style === 'destructive' ? 'rgba(239, 68, 68, 0.2)' : (btn.style === 'cancel' ? theme.colors.surfaceHighlight : theme.colors.primary),
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  marginLeft: index > 0 ? 10 : 0,
+                  alignItems: 'center',
+                  borderWidth: btn.style === 'cancel' ? 1 : 0,
+                  borderColor: theme.colors.border
+                }}
+                onPress={() => {
+                  if (btn.onPress) btn.onPress();
+                  onClose();
+                }}
+              >
+                <Text style={{
+                  color: btn.style === 'destructive' ? theme.colors.danger : (btn.style === 'cancel' ? theme.colors.textSecondary : '#FFF'),
+                  fontWeight: 'bold', fontSize: 16
+                }}>
+                  {btn.text}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+
 export default function App() {
+
+  // --- Custom Alert State (Phase 24) ---
+  const [alertVisible, setAlertVisible] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({ title: '', message: '', buttons: [] });
+
+  // --- Auth State (Phase 27) ---
+  const [session, setSession] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) handleInitialSync(session.user.id);
+    });
+
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) handleInitialSync(session.user.id);
+    });
+  }, []);
+
+  const handleInitialSync = async (userId) => {
+    const hasSynced = await AsyncStorage.getItem('@first_sync_complete');
+    if (hasSynced) return; // Already migrated
+
+    // Simple strategy: Check if we have local transactions
+    const localData = await AsyncStorage.getItem(STORAGE_KEY);
+    const hasLocalData = localData && JSON.parse(localData).length > 0;
+
+    if (hasLocalData) {
+      // Local exists -> Upload to Cloud (Backup)
+      const res = await SyncService.uploadLocalDataToCloud(userId);
+      if (res.success) {
+        Alert.alert("Cloud Backup", "Your local data has been safely backed up to the cloud!");
+        await AsyncStorage.setItem('@first_sync_complete', 'true');
+      }
+    } else {
+      // No local -> Try to download (Restore)
+      const res = await SyncService.pullDataFromCloud(userId);
+      if (res.success && res.count > 0) {
+        Alert.alert("Data Restored", `Downloaded ${res.count} transactions from cloud.`);
+        // Reload data to UI
+        loadData();
+        await AsyncStorage.setItem('@first_sync_complete', 'true');
+      }
+    }
+  };
+
+  const showAlert = (title, message, buttons = [{ text: 'OK', onPress: () => { } }]) => {
+    // Normalize buttons if strictly native API format was used (text, style, onPress)
+    const formattedButtons = buttons.map(b => ({
+      text: b.text || 'OK',
+      onPress: b.onPress,
+      style: b.style || 'default'
+    }));
+    setAlertConfig({ title, message, buttons: formattedButtons });
+    setAlertVisible(true);
+  };
+
   // --- 1. 核心状态管理 ---
   const [modalVisible, setModalVisible] = useState(false); // 记账弹窗
   const [assetModalVisible, setAssetModalVisible] = useState(false); // 资产弹窗
@@ -34,12 +226,14 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'stats'
   const [currentMonth, setCurrentMonth] = useState(new Date()); // 用于统计筛选月份
   const [statsRange, setStatsRange] = useState('monthly'); // 'weekly' | 'monthly' | 'yearly'
+  const [statsType, setStatsType] = useState('expense'); // 'expense' | 'income'
 
   // 记账输入状态
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
-  const [type, setType] = useState('expense'); // 'expense' or 'income'
-  const [selectedAssetId, setSelectedAssetId] = useState(null); // 记账时选中的资产ID
+  const [type, setType] = useState('expense'); // 'expense', 'income', 'transfer'
+  const [selectedAssetId, setSelectedAssetId] = useState(null); // 'From' Asset
+  const [toAssetId, setToAssetId] = useState(null); // 'To' Asset
   // 新增：选中分类状态
   const [selectedCategory, setSelectedCategory] = useState(DEFAULT_CATEGORIES.expense[0]);
   // 编辑模式状态
@@ -80,8 +274,65 @@ export default function App() {
   const [goals, setGoals] = useState([]);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
 
+  // --- Smart Features: Quick Actions (Phase 18) ---
+  useEffect(() => {
+    if (Platform.OS !== 'android' && Platform.OS !== 'ios') return;
+
+    QuickActions.setItems([
+      {
+        title: "吃饭 (Food)",
+        subtitle: "快速记录餐饮",
+        icon: "compose",
+        id: "quick_food",
+        params: { categoryId: 'food' },
+      },
+      {
+        title: "交通 (Transport)",
+        subtitle: "快速记录交通",
+        icon: "car",
+        id: "quick_transport",
+        params: { categoryId: 'transport' },
+      },
+      {
+        title: "奶茶 (Bubble Tea)",
+        subtitle: "续命水 🥤",
+        icon: "heart",
+        id: "quick_tea",
+        params: { categoryId: 'food', note: '奶茶' },
+      },
+    ]);
+
+    const subscription = QuickActions.addListener((action) => {
+      // Small delay to ensure app loads
+      setTimeout(() => {
+        setModalVisible(true);
+        if (action.params) {
+          if (action.params.categoryId) {
+            const cat = DEFAULT_CATEGORIES.expense.find(c => c.id === action.params.categoryId);
+            if (cat) setSelectedCategory(cat);
+          }
+          if (action.params.note) setNote(action.params.note);
+        }
+      }, 500);
+    });
+
+    return () => subscription.remove();
+  }, []);
+
   // 新增分类状态
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  // 备注弹窗状态 (Phase 20)
+  const [remarkModalVisible, setRemarkModalVisible] = useState(false);
+  const remarkInputRef = useRef(null);
+
+  useEffect(() => {
+    if (remarkModalVisible) {
+      // Delay focus to ensure modal animation completes
+      setTimeout(() => {
+        remarkInputRef.current?.focus();
+      }, 300);
+    }
+  }, [remarkModalVisible]);
   const [newCatName, setNewCatName] = useState('');
   const [newCatIcon, setNewCatIcon] = useState('🍕');
 
@@ -96,6 +347,7 @@ export default function App() {
   const GOALS_KEY = '@my_budget_goals';
   const CATEGORIES_KEY = '@my_budget_categories';
   const BUDGET_KEY = '@my_budget_plan';
+  const LAST_USED_ASSET_KEY = '@my_budget_last_asset';
 
   // --- 初始化加载 ---
   useEffect(() => {
@@ -125,6 +377,15 @@ export default function App() {
         setSelectedAssetId(1);
       }
 
+      // Restore Last Used Asset
+      const lastAssetId = await AsyncStorage.getItem(LAST_USED_ASSET_KEY);
+      if (lastAssetId) {
+        const id = parseInt(lastAssetId);
+        if (loadedAssets.find(a => a.id === id)) {
+          setSelectedAssetId(id);
+        }
+      }
+
       const goalsJson = await AsyncStorage.getItem(GOALS_KEY);
       if (goalsJson) setGoals(JSON.parse(goalsJson));
 
@@ -136,11 +397,48 @@ export default function App() {
     }
   };
 
-  const saveTransactions = async (data) => { try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { } };
+  const saveTransactions = async (data) => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      updateWidgets(data, monthlyBudget);
+    } catch (e) { }
+  };
   const saveAssets = async (data) => { try { await AsyncStorage.setItem(ASSETS_KEY, JSON.stringify(data)); } catch (e) { } };
   const saveGoals = async (data) => { try { await AsyncStorage.setItem(GOALS_KEY, JSON.stringify(data)); } catch (e) { } };
   const saveCategories = async (data) => { try { await AsyncStorage.setItem(CATEGORIES_KEY, JSON.stringify(data)); } catch (e) { } };
-  const saveBudget = async (amount) => { try { await AsyncStorage.setItem(BUDGET_KEY, amount.toString()); } catch (e) { } };
+  const saveBudget = async (amount) => {
+    try {
+      await AsyncStorage.setItem(BUDGET_KEY, amount.toString());
+      updateWidgets(transactions, amount);
+    } catch (e) { }
+  };
+
+  // --- Widget Update Helper ---
+  const updateWidgets = async () => {
+    // try {
+    //   // Calculate Today's Expense
+    //   const todayStr = new Date().toISOString().split('T')[0];
+    //   const todayExpense = transactions
+    //     .filter(t => t.type === 'expense' && t.date.startsWith(todayStr))
+    //     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+    //   // Get Budget
+    //   const budgetVal = monthlyBudget || 0;
+    //   const currentMonthStr = new Date().toISOString().substring(0, 7);
+    //   const monthExpense = transactions
+    //     .filter(t => t.type === 'expense' && t.date.startsWith(currentMonthStr))
+    //     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    //   const remaining = budgetVal - monthExpense;
+
+    //   requestWidgetUpdate({
+    //     widgetName: 'InfoWidget',
+    //     renderWidget: () => <InfoWidget expense={todayExpense.toFixed(2)} budget={remaining.toFixed(2)} theme="dark" />,
+    //     widgetClassName: 'InfoWidget',
+    //   });
+    // } catch (e) {
+    //   console.log("Widget Update Failed (Non-Native Mode):", e);
+    // }
+  };
 
   // --- 计算总资产 (Assets + Goals) ---
   const totalAssetBalance = assets.reduce((acc, item) => acc + parseFloat(item.balance), 0) +
@@ -148,68 +446,77 @@ export default function App() {
 
   // --- 统计计算 Helper ---
   // --- 统计计算 Helper ---
-  const getStats = (overrideRange = null, dateOverride = null) => {
-    let filteredTrans = [];
-    const now = dateOverride ? new Date(dateOverride) : new Date(currentMonth);
-    const range = overrideRange || statsRange;
+  // --- Helper: Get Statistics (Phase 4 & 22) ---
+  const getStats = (range = 'monthly', date = currentMonth, type = 'expense') => {
+    let filtered = transactions.filter(t => t.type === type); // Filter by type first
 
+    const rangeDate = new Date(date);
     if (range === 'weekly') {
-      // 获取本周起始/结束 (假设周一为第一天)
-      const day = now.getDay() || 7; // Get current day number, converting Sun (0) to 7
-      if (day !== 1) now.setHours(-24 * (day - 1)); // Set to Monday
-      now.setHours(0, 0, 0, 0);
-      const startOfWeek = now.getTime();
-      const endOfWeek = startOfWeek + 7 * 24 * 60 * 60 * 1000;
+      // Logic for weekly range (simplified for now: match ISO week or just strictly > 7 days ago?)
+      // Keeping it simple: Filter by date string >= 7 days ago
+      // Actually let's just stick to the current month logic for simplicity first, or reuse existing logic if robust.
+      // Existing logic was: `t.date.startsWith...`
+      // Let's implement robust Weekly/Monthly/Yearly
 
-      filteredTrans = transactions.filter(t => {
-        const tDate = new Date(t.date).getTime();
-        return tDate >= startOfWeek && tDate < endOfWeek;
+      const start = new Date(rangeDate);
+      start.setDate(start.getDate() - 7); // Last 7 days
+      filtered = filtered.filter(t => new Date(t.date) >= start && new Date(t.date) <= rangeDate);
+
+    } else if (range === 'monthly') {
+      const y = rangeDate.getFullYear();
+      const m = rangeDate.getMonth();
+      filtered = filtered.filter(t => {
+        const d = new Date(t.date);
+        return d.getFullYear() === y && d.getMonth() === m;
       });
-    } else if (statsRange === 'monthly') {
-      const year = now.getFullYear();
-      const month = now.getMonth();
-      filteredTrans = transactions.filter(t => {
-        const tDate = new Date(t.date);
-        return tDate.getFullYear() === year && tDate.getMonth() === month;
-      });
-    } else if (statsRange === 'yearly') {
-      const year = now.getFullYear();
-      filteredTrans = transactions.filter(t => {
-        const tDate = new Date(t.date);
-        return tDate.getFullYear() === year;
-      });
+    } else if (range === 'yearly') {
+      const y = rangeDate.getFullYear();
+      filtered = filtered.filter(t => new Date(t.date).getFullYear() === y);
     }
 
-    const totalExpense = filteredTrans.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
-    const totalIncome = filteredTrans.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+    const total = filtered.reduce((acc, t) => acc + Math.abs(t.amount), 0);
 
-    // 分类汇总 (Pie Chart Data)
+    // Group by Category
     const categoryMap = {};
-    filteredTrans.filter(t => t.type === 'expense').forEach(t => {
-      if (!categoryMap[t.categoryId]) {
-        categoryMap[t.categoryId] = {
-          name: t.title,
-          amount: 0,
-          color: '#' + Math.floor(Math.random() * 16777215).toString(16),
-          legendFontColor: "#7F7F7F",
-          legendFontSize: 12
-        };
-        const cat = categories.expense.find(c => c.id === t.categoryId);
-        if (cat) categoryMap[t.categoryId].name = cat.name;
+    filtered.forEach(t => {
+      const catId = t.categoryId || 'uncategorized';
+      // Find category info
+      let catName = '未分类';
+      let catColor = '#CCC';
+      let catIcon = '❓';
+
+      if (t.categoryId) {
+        // Search in both expense and income to find match
+        const allCats = [...categories.expense, ...categories.income];
+        const c = allCats.find(c => c.id === t.categoryId);
+        if (c) {
+          catName = c.name;
+          catColor = c.color;
+          catIcon = c.icon;
+        }
+      } else {
+        catName = t.title || '其他';
       }
-      categoryMap[t.categoryId].amount += Math.abs(t.amount);
+
+      if (!categoryMap[catId]) {
+        categoryMap[catId] = {
+          name: catName,
+          population: 0,
+          color: catColor,
+          icon: catIcon,
+          legendFontColor: "#7F7F7F",
+          legendFontSize: 15
+        };
+      }
+      categoryMap[catId].population += Math.abs(t.amount);
     });
 
-    const pieData = Object.keys(categoryMap).map(key => ({
-      name: categoryMap[key].name,
-      population: categoryMap[key].amount,
-      color: categoryMap[key].color,
-      legendFontColor: "#AAA",
-      legendFontSize: 12
-    })).sort((a, b) => b.population - a.population);
+    const pieData = Object.values(categoryMap)
+      .sort((a, b) => b.population - a.population);
 
-    return { totalExpense, totalIncome, pieData };
+    return { total, pieData };
   };
+
 
   // --- Helper: Group Transactions by Date (Phase 14) ---
   const groupTransactionsByDate = (transactions) => {
@@ -346,9 +653,10 @@ export default function App() {
       id: Date.now(),
       title: `存入目标: ${activeGoal.title}`,
       date: new Date(`${transactionDate}T${transactionTime}:00`).toISOString(), // Fix: Use ISO format from inputs
-      amount: -amountVal,
+      amount: amountVal, // Store as positive (logic handles deduction)
       icon: '🎯',
-      type: 'expense',
+      type: 'transfer',
+      subType: 'goal_deposit',
       assetName: selectedAsset.name,
       assetId: selectedAsset.id,
       goalId: activeGoal.id // Link transaction to goal
@@ -358,6 +666,49 @@ export default function App() {
     const updatedTrans = [newTransaction, ...transactions];
     setTransactions(updatedTrans); await saveTransactions(updatedTrans);
     setSavingAmount(''); setSavingModalVisible(false);
+  };
+
+  // --- E. 删除交易 (Phase 19) ---
+  // --- E. 删除交易 (Phase 19 & 27) ---
+  const handleDeleteTransaction = async (targetItem) => {
+    const target = targetItem || activeTransaction;
+    if (!target) return;
+
+    // 1. 从资产中退回金额
+    if (target.assetId) {
+      const assetIndex = assets.findIndex(a => a.id === target.assetId);
+      if (assetIndex !== -1) {
+        const updatedAssets = [...assets];
+        updatedAssets[assetIndex].balance -= target.amount;
+        setAssets(updatedAssets);
+        await saveAssets(updatedAssets);
+      }
+    }
+
+    // 2. 从交易列表中删除
+    const updatedTransactions = transactions.filter(t => t.id !== target.id);
+    setTransactions(updatedTransactions);
+    await saveTransactions(updatedTransactions);
+
+    // 3. 如果是目标存款，从目标中扣除
+    if (target.goalId && target.subType === 'goal_deposit') {
+      const updatedGoals = goals.map(g => {
+        if (g.id === target.goalId) {
+          return { ...g, savedAmount: g.savedAmount - Math.abs(target.amount) };
+        }
+        return g;
+      });
+      setGoals(updatedGoals);
+      await saveGoals(updatedGoals);
+    }
+
+    // Shadow Sync (Cloud)
+    if (session) SyncService.deleteTransaction(target.id, session.user.id);
+
+    // UI Cleanup
+    setModalVisible(false);
+    setActiveTransaction(null);
+    showAlert("已删除", `资金已退回到 ${target.assetName}`);
   };
 
   // --- F. 添加自定义分类 ---
@@ -388,9 +739,28 @@ export default function App() {
   // --- C. 添加/编辑 记账 (核心逻辑更新) ---
   const handleSaveTransaction = async (shouldClose = true) => {
     if (!amount) return;
-    if (!selectedAssetId) { Alert.alert("提示", "请选择支付账户"); return; }
+    if (!selectedAssetId) { showAlert("提示", "请选择支付账户"); return; }
 
-    const transAmount = parseFloat(amount);
+    // --- Smart Feature: Calculator (Phase 20) ---
+    // Allow simple math inputs like "10+5" or "20-2"
+    let transAmount = 0;
+    try {
+      // Safe simplistic eval for basic math
+      const cleanInput = amount.replace(/[^0-9+\-*/.]/g, '');
+      // check if it's just a number
+      if (!isNaN(parseFloat(cleanInput)) && isFinite(cleanInput)) {
+        transAmount = parseFloat(cleanInput);
+      } else {
+        // It has math symbols. 
+        // Note: eval() is generally unsafe but strict regex above prevents malicious code. 
+        // For a safer approach without eval, we'd write a parser. Given requirements, let's use a Function constructor for basic math.
+        transAmount = new Function('return ' + cleanInput)();
+      }
+    } catch (e) {
+      showAlert("Error", "Invalid Amount."); return;
+    }
+
+    // const transAmount = parseFloat(amount); // Replaced by logic above
     const finalAmount = type === 'expense' ? -transAmount : transAmount;
 
     // 准备新数据
@@ -401,7 +771,7 @@ export default function App() {
     let updatedTransactions = [...transactions];
 
     // 如果没有填备注，就用分类名称代替 (例如 "餐饮")
-    const displayTitle = note || selectedCategory.name;
+    const displayTitle = note || (type === 'transfer' ? '转账' : selectedCategory.name);
 
     if (editingId) {
       // === 编辑模式 ===
@@ -442,27 +812,65 @@ export default function App() {
 
     } else {
       // === 新增模式 ===
-      const assetIndex = updatedAssets.findIndex(a => a.id === selectedAssetId);
-      if (assetIndex !== -1) {
-        updatedAssets[assetIndex].balance += finalAmount;
-      }
+      if (type === 'transfer') {
+        // === 处理转账 (Internal Transfer) ===
+        if (!toAssetId) { showAlert("提示", "请选择转入账户"); return; }
 
-      const newTransaction = {
-        id: Date.now(),
-        title: displayTitle,
-        date: new Date(`${transactionDate}T${transactionTime}:00`).toISOString(), // Combine Date & Time
-        amount: finalAmount,
-        icon: selectedCategory.icon,
-        type: type,
-        assetName: selectedAsset.name,
-        assetId: selectedAsset.id,
-        categoryId: selectedCategory.id
-      };
-      updatedTransactions = [newTransaction, ...updatedTransactions];
+        const fromAssetIndex = updatedAssets.findIndex(a => a.id === selectedAssetId);
+        const toAssetIndex = updatedAssets.findIndex(a => a.id === toAssetId);
+
+        if (fromAssetIndex !== -1 && toAssetIndex !== -1) {
+          updatedAssets[fromAssetIndex].balance -= transAmount; // Deduct from Source
+          updatedAssets[toAssetIndex].balance += transAmount;   // Add to Dest
+
+          const newTransaction = {
+            id: Date.now(),
+            title: displayTitle || '转账',
+            date: new Date(`${transactionDate}T${transactionTime}:00`).toISOString(),
+            amount: transAmount, // Transfers are positive numbers
+            icon: '↔️',
+            type: 'transfer',
+            subType: 'internal',
+            assetName: selectedAsset.name, // From Asset Name
+            assetId: selectedAsset.id,
+            toAssetId: toAssetId,
+            toAssetName: updatedAssets[toAssetIndex].name,
+            categoryId: 'transfer'
+          };
+          updatedTransactions = [newTransaction, ...updatedTransactions];
+        }
+
+      } else {
+        // === 普通收支 (Expense / Income) ===
+        const assetIndex = updatedAssets.findIndex(a => a.id === selectedAssetId);
+        if (assetIndex !== -1) {
+          updatedAssets[assetIndex].balance += finalAmount;
+        }
+
+        const newTransaction = {
+          id: Date.now(),
+          title: displayTitle,
+          date: new Date(`${transactionDate}T${transactionTime}:00`).toISOString(),
+          amount: finalAmount,
+          icon: selectedCategory.icon,
+          type: type,
+          assetName: selectedAsset.name,
+          assetId: selectedAsset.id,
+          categoryId: selectedCategory.id
+        };
+        updatedTransactions = [newTransaction, ...updatedTransactions];
+        // Shadow Sync (Cloud)
+        if (session) SyncService.syncTransaction(newTransaction, session.user.id);
+      }
     }
 
     setAssets(updatedAssets); await saveAssets(updatedAssets);
     setTransactions(updatedTransactions); await saveTransactions(updatedTransactions);
+
+    // Save Persistent Asset Selection
+    if (selectedAssetId) {
+      AsyncStorage.setItem(LAST_USED_ASSET_KEY, selectedAssetId.toString()).catch(e => console.log(e));
+    }
 
     // Phase 8: Recalculate Goal Progress (Safe Approach)
     // If we just edited/added a transaction that *might* be related to a goal, 
@@ -498,7 +906,7 @@ export default function App() {
       setAmount('');
       setNote('');
       setEditingId(null); // Switch to 'add' mode for next one if we were editing (though typically this button is for adding)
-      Alert.alert("Success", "已保存，请继续添加下一笔");
+      showAlert("Success", "已保存，请继续添加下一笔");
     }
   };
 
@@ -525,7 +933,7 @@ export default function App() {
   };
 
   const handleLongPressTransaction = (transaction) => {
-    Alert.alert(
+    showAlert(
       "操作记录",
       `想要对 "${transaction.title}" 做什么？`,
       [
@@ -543,121 +951,264 @@ export default function App() {
     );
   };
 
-  const handleDeleteTransaction = async (transaction) => {
-    if (transaction.assetId) {
-      const updatedAssets = assets.map(asset => {
-        if (asset.id === transaction.assetId) {
-          return { ...asset, balance: asset.balance - transaction.amount };
-        }
-        return asset;
-      });
-      setAssets(updatedAssets); await saveAssets(updatedAssets);
-    }
 
-    // Phase 8: Recalculate Goal Progress if deleting a deposit
-    if (transaction.goalId) {
-      const updatedGoals = goals.map(g => {
-        if (g.id === transaction.goalId) {
-          // Deduct the saved amount (transaction.amount is negative for expense, so we add it back? No, wait.)
-          // Deposit transaction amount is NEGATIVE (expense). 
-          // Saving Goal Amount is POSITIVE.
-          // If I deposit 100, transaction is -100. Goal Amount +100.
-          // If I delete transaction -100, Goal Amount should be -100.
-          return { ...g, savedAmount: g.savedAmount - Math.abs(transaction.amount) };
-        }
-        return g;
-      });
-      setGoals(updatedGoals); await saveGoals(updatedGoals);
-    }
-
-    const updatedTrans = transactions.filter(t => t.id !== transaction.id);
-    setTransactions(updatedTrans); await saveTransactions(updatedTrans);
-  };
 
   // --- Render Stats Screen ---
+  // --- Render Stats Screen (Phase 22: Redesign) ---
+  // --- Render Stats Screen (Phase 23: Visual Refinement) ---
+
+  // --- Helper: Get Week Range (Mon-Sun) ---
+  const getWeekRange = (date) => {
+    const d = new Date(date);
+    const day = d.getDay(); // 0 is Sunday
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+    const start = new Date(d.setDate(diff));
+    const end = new Date(d.setDate(diff + 6));
+
+    const format = (date) => `${date.getDate()} ${date.toLocaleString('default', { month: 'short' })}`;
+    return `${format(start)} - ${format(end)}`;
+  };
+
   const renderStatsScreen = () => {
-    const stats = getStats();
+    // Determine Type Filter
+    // In update_stats.py, I injected `const [statsType, setStatsType] = useState('expense');`
+    // Assuming that state exists now.
+
+    const stats = getStats(statsRange, currentMonth, statsType);
+
+    const expenseStats = getStats(statsRange, currentMonth, 'expense');
+    const incomeStats = getStats(statsRange, currentMonth, 'income');
+    const netBalance = incomeStats.total - expenseStats.total;
+
     const screenWidth = Dimensions.get("window").width;
 
     return (
-      <View style={{ flex: 1 }}>
-        <View style={styles.statsHeader}>
-          <TouchableOpacity onPress={() => {
-            const splitDate = new Date(currentMonth);
-            if (statsRange === 'weekly') splitDate.setDate(splitDate.getDate() - 7);
-            else if (statsRange === 'monthly') splitDate.setMonth(splitDate.getMonth() - 1);
-            else splitDate.setFullYear(splitDate.getFullYear() - 1);
-            setCurrentMonth(splitDate);
-          }}><Text style={styles.monthChangeArrow}>◀</Text></TouchableOpacity>
+      <LinearGradient
+        colors={['#0F172A', '#1E3A5F']}
+        style={{ flex: 1 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
+        <SafeAreaView style={{ flex: 1 }}>
 
-          <View style={{ alignItems: 'center' }}>
-            <TouchableOpacity onPress={() => setMonthModalVisible(true)}>
-              <Text style={styles.monthTitle}>
-                {statsRange === 'yearly' ? currentMonth.getFullYear() :
-                  statsRange === 'monthly' ? `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月` :
-                    `${currentMonth.getMonth() + 1}月${currentMonth.getDate()}日 (本周)`}
-              </Text>
-              <Text style={{ color: '#666', fontSize: 10, textAlign: 'center' }}>(点击切换)</Text>
-            </TouchableOpacity>
-            {/* Range Switcher */}
-            <View style={{ flexDirection: 'row', marginTop: 5 }}>
-              {['weekly', 'monthly', 'yearly'].map(range => (
-                <TouchableOpacity key={range} onPress={() => setStatsRange(range)} style={{ paddingHorizontal: 8 }}>
-                  <Text style={{ color: statsRange === range ? '#4A90E2' : '#555', fontWeight: statsRange === range ? 'bold' : 'normal' }}>
-                    {range === 'weekly' ? '周' : range === 'monthly' ? '月' : '年'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+          {/* 1. Header & Range Switcher */}
+          <View style={{ paddingHorizontal: 20, paddingTop: 10 }}>
+            {/* Range Selector */}
+            <View style={{ flexDirection: 'row', justifyContent: 'center', marginBottom: 15 }}>
+              <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 3 }}>
+                {['weekly', 'monthly', 'yearly'].map(range => (
+                  <TouchableOpacity key={range} onPress={() => setStatsRange(range)}
+                    style={{ paddingHorizontal: 16, paddingVertical: 6, backgroundColor: statsRange === range ? '#6366F1' : 'transparent', borderRadius: 18 }}>
+                    <Text style={{ color: statsRange === range ? '#FFF' : '#94A3B8', fontWeight: 'bold', fontSize: 13 }}>
+                      {range === 'weekly' ? '周' : range === 'monthly' ? '月' : '年'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* Date Navigator */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <TouchableOpacity onPress={() => {
+                const d = new Date(currentMonth);
+                if (statsRange === 'weekly') d.setDate(d.getDate() - 7);
+                else if (statsRange === 'monthly') d.setMonth(d.getMonth() - 1);
+                else d.setFullYear(d.getFullYear() - 1);
+                setCurrentMonth(d);
+              }}>
+                <Text style={{ fontSize: 22, color: '#6366F1' }}>◀</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => {
+                if (statsRange === 'monthly') setMonthModalVisible(true);
+                if (statsRange === 'weekly') setCalendarVisible(true); // Reuse calendar for week
+                // Yearly? Maybe just use month picker for now or add year picker later
+              }}>
+                <Text style={{ color: '#FFF', fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>
+                  {statsRange === 'yearly' ? `${currentMonth.getFullYear()}年` :
+                    statsRange === 'monthly' ? `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月` :
+                      getWeekRange(currentMonth)}
+                </Text>
+                <Text style={{ color: '#AAA', fontSize: 12, textAlign: 'center' }}>
+                  {(statsRange === 'monthly' || statsRange === 'weekly') ? '▼' : ''}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => {
+                const d = new Date(currentMonth);
+                if (statsRange === 'weekly') d.setDate(d.getDate() + 7);
+                else if (statsRange === 'monthly') d.setMonth(d.getMonth() + 1);
+                else d.setFullYear(d.getFullYear() + 1);
+                setCurrentMonth(d);
+              }}>
+                <Text style={{ fontSize: 22, color: '#6366F1' }}>▶</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
-          <TouchableOpacity onPress={() => {
-            const splitDate = new Date(currentMonth);
-            if (statsRange === 'weekly') splitDate.setDate(splitDate.getDate() + 7);
-            else if (statsRange === 'monthly') splitDate.setMonth(splitDate.getMonth() + 1);
-            else splitDate.setFullYear(splitDate.getFullYear() + 1);
-            setCurrentMonth(splitDate);
-          }}><Text style={styles.monthChangeArrow}>▶</Text></TouchableOpacity>
-        </View>
+          <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            <View style={{ paddingHorizontal: 20, paddingBottom: 100 }}>
 
-        <ScrollView style={{ flex: 1 }}>
-          <View style={styles.chartCard}>
-            <Text style={styles.chartTitle}>支出构成</Text>
-            {stats.pieData.length > 0 ? (
-              <PieChart
-                data={stats.pieData}
-                width={screenWidth - 48}
-                height={220}
-                chartConfig={{
-                  color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                }}
-                accessor={"population"}
-                backgroundColor={"transparent"}
-                paddingLeft={"15"}
-                absolute
-              />
-            ) : (
-              <Text style={{ color: '#555', textAlign: 'center', marginVertical: 20 }}>本月没有支出记录 🍃</Text>
-            )}
-          </View>
-
-          <View style={{ paddingHorizontal: 24, paddingBottom: 100 }}>
-            <Text style={styles.sectionTitle}>分类排行</Text>
-            {stats.pieData.map((item, index) => (
-              <View key={index} style={styles.statRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: item.color, marginRight: 10 }} />
-                  <Text style={styles.statCatName}>{item.name}</Text>
+              {/* 2. Total Summary Card (Updated with Net Balance) */}
+              <View style={{
+                flexDirection: 'column',
+                backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 24, padding: 20, marginBottom: 24,
+                borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
+              }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 }}>
+                  <View>
+                    <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4 }}>总收入 Income</Text>
+                    <Text style={{ color: '#4ADE80', fontSize: 20, fontWeight: 'bold' }}>
+                      + {incomeStats.total.toFixed(2)}
+                    </Text>
+                  </View>
+                  <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                  <View>
+                    <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, textAlign: 'right' }}>总支出 Expense</Text>
+                    <Text style={{ color: '#F87171', fontSize: 20, fontWeight: 'bold', textAlign: 'right' }}>
+                      - {expenseStats.total.toFixed(2)}
+                    </Text>
+                  </View>
                 </View>
-                <Text style={styles.statAmount}>RM {item.population.toFixed(2)}</Text>
+
+                {/* Net Balance Row */}
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: 'rgba(0,0,0,0.2)', paddingVertical: 8, borderRadius: 12
+                }}>
+                  <Text style={{ fontSize: 16, marginRight: 8 }}>{netBalance >= 0 ? '💰' : '⚠️'}</Text>
+                  <Text style={{ color: '#CBD5E1', marginRight: 8, fontSize: 13 }}>结余 (Net Balance):</Text>
+                  <Text style={{
+                    color: netBalance >= 0 ? '#4ADE80' : '#F87171',
+                    fontWeight: 'bold', fontSize: 16
+                  }}>
+                    {netBalance >= 0 ? '+' : ''} RM {netBalance.toFixed(2)}
+                  </Text>
+                </View>
               </View>
-            ))}
-          </View>
-        </ScrollView>
-      </View>
+
+              {/* 3. Type Toggle (Income | Expense) */}
+              <View style={{ flexDirection: 'row', marginBottom: 20, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 16, padding: 4 }}>
+                <TouchableOpacity onPress={() => setStatsType('expense')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'expense' ? '#FF6B6B' : 'transparent', borderRadius: 14 }}>
+                  <Text style={{ color: '#FFF', fontWeight: 'bold' }}>支出 Expense</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setStatsType('income')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'income' ? '#4CAF50' : 'transparent', borderRadius: 14 }}>
+                  <Text style={{ color: '#FFF', fontWeight: 'bold' }}>收入 Income</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 4. Donut Chart Section (Custom Side Legend) */}
+              {stats.pieData.length > 0 ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 30, paddingHorizontal: 10 }}>
+
+                  {/* Left: Chart */}
+                  <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={{ width: 180, height: 180, alignItems: 'center', justifyContent: 'center' }}>
+                      <PieChart
+                        data={stats.pieData}
+                        width={180}
+                        height={180}
+                        chartConfig={{ color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})` }}
+                        accessor={"population"}
+                        backgroundColor={"transparent"}
+                        paddingLeft={"45"} // Center in 180
+                        hasLegend={false}
+                        absolute
+                      />
+                      {/* Donut Hole */}
+                      <View style={{
+                        position: 'absolute',
+                        width: 70, height: 70, borderRadius: 35,
+                        backgroundColor: '#1E3A5F',
+                        justifyContent: 'center', alignItems: 'center'
+                      }} />
+                    </View>
+                  </View>
+
+                  {/* Right: Custom Legend */}
+                  <View style={{ flex: 1, paddingLeft: 20, justifyContent: 'center' }}>
+                    {stats.pieData.map((item, index) => {
+                      const percentage = ((item.population / stats.total) * 100).toFixed(1);
+                      return (
+                        <View key={index} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                          {/* Color Dot */}
+                          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: item.color, marginRight: 8 }} />
+                          {/* Name */}
+                          <Text style={{ color: '#E2E8F0', fontSize: 12, marginRight: 6, fontWeight: '600' }}>{item.name}</Text>
+                          {/* Percentage */}
+                          <Text style={{ color: '#94A3B8', fontSize: 12 }}>{percentage}%</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+
+                </View>
+              ) : (
+                <View style={{ height: 200, justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 40 }}>🍃</Text>
+                  <Text style={{ color: '#94A3B8', marginTop: 10 }}>没有记录</Text>
+                </View>
+              )}
+
+              {/* 5. Detailed Category List */}
+              <Text style={styles.sectionTitle}>分类详情</Text>
+              {stats.pieData.map((item, index) => {
+                const percentage = ((item.population / stats.total) * 100);
+                return (
+                  <View key={index} style={{
+                    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                    marginBottom: 12, padding: 16,
+                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                    borderRadius: 16,
+                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'
+                  }}>
+                    {/* Left: Icon */}
+                    <View style={{
+                      width: 44, height: 44, borderRadius: 22,
+                      backgroundColor: 'rgba(255,255,255,0.1)',
+                      justifyContent: 'center', alignItems: 'center', marginRight: 15
+                    }}>
+                      <Text style={{ fontSize: 20 }}>{item.icon}</Text>
+                    </View>
+
+                    {/* Middle: Name + Progress Bar */}
+                    <View style={{ flex: 1, marginRight: 15, justifyContent: 'center' }}>
+                      {/* Name */}
+                      <Text style={{ color: '#F1F5F9', fontSize: 15, fontWeight: '600', marginBottom: 6 }}>{item.name}</Text>
+
+                      {/* Progress Bar (Color matches category) */}
+                      <View style={{ height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+                        <View style={{
+                          width: `${percentage}%`,
+                          height: '100%',
+                          backgroundColor: item.color,
+                          borderRadius: 3
+                        }} />
+                      </View>
+                    </View>
+
+                    {/* Right: Amount + % */}
+                    <View style={{ alignItems: 'flex-end' }}>
+                      {/* Amount */}
+                      <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: 'bold', marginBottom: 2 }}>
+                        RM {item.population.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                      </Text>
+                      {/* Percentage */}
+                      <Text style={{ color: '#94A3B8', fontSize: 12 }}>
+                        {percentage.toFixed(2)}%
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })}
+
+
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </LinearGradient>
     );
   };
-
   // --- Helper: Asset History Calculation (Phase 11) ---
   const calculateAssetHistory = (asset) => {
     const today = new Date();
@@ -701,6 +1252,8 @@ export default function App() {
   };
 
   // --- Helper: Net Worth History Calculation (Phase 16) ---
+  // --- Helper: Net Worth History Calculation (Phase 16) ---
+  // --- Helper: Net Worth History Calculation (Phase 16) ---
   const calculateNetWorthHistory = () => {
     const today = new Date();
     const dates = [];
@@ -720,47 +1273,12 @@ export default function App() {
     transactions.forEach(t => {
       const dateStr = t.date.split('T')[0];
       if (!dailyChange[dateStr]) dailyChange[dateStr] = 0;
-      // Expense reduces net worth, Income increases it. 
-      // But transaction amount is stored as positive for expense? 
-      // Let's check: expense is usually negative logic in balance calc, but stored as positive number + type='expense'.
-      // In calculateAssetHistory: `dailyChange[dateStr] += t.amount` (Wait, this looks wrong in previous code if t.amount is always positive).
-      // Let's check transaction storage. 
-      // handleSaveTransaction: amount is parseFloat(amount). type is 'expense' or 'income'.
-      // If type='expense', asset balance should decrease.
-      // But in calculateAssetHistory, we did `dailyChange += t.amount`. 
-      // And then `runningBalance = runningBalance - change`.
-      // If I spent 100 today. Current is 900. Previous was 1000.
-      // dailyChange = 100. running = 900 - 100 = 800. WRONG.
-      // It should be `running = current - change`. 
-      // If I spent 100 (balance went DOWN), to get yesterday, I must ADD 100.
-      // So `previous = current - (-100)` -> `current + 100`.
-
-      // Let's fix the logic here correctly.
-      // We are going BACKWARDS in time.
-      // Yesterday = Today - (Change that happened today).
-      // Change = Income - Expense.
-      // If I had 1000 yesterday, +200 Income, -50 Expense = 1150 Today.
-      // Yesterday (1000) = Today (1150) - (150). Correct.
 
       let change = 0;
       if (t.type === 'income') change = t.amount;
-      else change = -t.amount;
+      else if (t.type === 'expense') change = -t.amount;
 
-      // However, my previous `calculateAssetHistory` might be buggy if `t.amount` is always positive.
-      // `dailyChange` summed up `t.amount` regardless of type? 
-      // Let's check `calculateAssetHistory` again. 
-      // It filters by `t.assetId === asset.id`.
-      // It sums `t.amount`. 
-      // App.js line 1550 (approx): `t.amount` seems to be just the number. 
-      // `handleSaveTransaction`: 
-      // if (type === 'expense') updatedAssets... balance -= amount;
-      // if (type === 'income') updatedAssets... balance += amount;
-      // So transaction object `amount` is positive number.
-      // `t.type` determines sign.
-
-      const sign = t.type === 'income' ? 1 : -1;
-      if (!dailyChange[dateStr]) dailyChange[dateStr] = 0;
-      dailyChange[dateStr] += (t.amount * sign);
+      dailyChange[dateStr] += change;
     });
 
     const reversedDates = [...dates].reverse();
@@ -770,12 +1288,24 @@ export default function App() {
     reversedDates.forEach(dateStr => {
       historyMap[dateStr] = runningBalance;
       const change = dailyChange[dateStr] || 0;
-      runningBalance = runningBalance - change; // Work backwards: subtract the change
+      runningBalance = runningBalance - change;
+    });
+
+    // Filter to show every 3rd day (to reduce dots/density)
+    const sparseDates = dates.filter((_, i) => i % 3 === 0);
+
+    // Return labels for the sparse dates (e.g., show label every 2nd point of the sparse set => every 6th day)
+    const labels = sparseDates.map((d, i) => {
+      if (i % 2 === 0) {
+        const [year, month, day] = d.split('-');
+        return `${month}/${day}`;
+      }
+      return '';
     });
 
     return {
-      labels: dates.filter((_, i) => i % 6 === 0).map(d => d.slice(5)),
-      datasets: [{ data: dates.map(d => historyMap[d] || 0) }]
+      labels: labels,
+      datasets: [{ data: sparseDates.map(d => historyMap[d] || 0) }]
     };
   };
 
@@ -815,13 +1345,18 @@ export default function App() {
             height={200}
             chartConfig={{
               backgroundColor: "#1e1e1e",
-              backgroundGradientFrom: "#2C3E50",
-              backgroundGradientTo: "#1e1e1e",
+              backgroundGradientFrom: "#1E293B",
+              backgroundGradientTo: "#1E293B",
+              backgroundGradientFromOpacity: 0,
+              backgroundGradientToOpacity: 0,
+              fillShadowGradientFrom: '#4A90E2',
+              fillShadowGradientTo: '#1E1E1E',
+              fillShadowGradientOpacity: 0.3,
               decimalPlaces: 0,
               color: (opacity = 1) => `rgba(74, 144, 226, ${opacity})`,
               labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
               style: { borderRadius: 16 },
-              propsForDots: { r: "4", strokeWidth: "2", stroke: "#4A90E2" },
+              propsForDots: { r: "0", strokeWidth: "0", stroke: "#4A90E2" }, // Hide dots
               propsForBackgroundLines: { strokeDasharray: "" }
             }}
             bezier
@@ -835,7 +1370,7 @@ export default function App() {
             <Text style={styles.addButtonText}>✏️ 编辑</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.addButton, { backgroundColor: '#333', borderWidth: 1, borderColor: '#555', marginHorizontal: 10, width: 120 }]} onPress={() => {
-            Alert.alert("删除账户", "确定要删除这个账户吗？", [
+            showAlert("删除账户", "确定要删除这个账户吗？", [
               { text: "取消", style: "cancel" },
               {
                 text: "删除", style: "destructive", onPress: async () => {
@@ -881,106 +1416,193 @@ export default function App() {
     );
   };
 
+  // --- Helper: Stable Color based on ID (Phase 21) ---
+  const getStableColor = (id) => {
+    let hash = 0;
+    const str = id.toString();
+    for (let i = 0; i < str.length; i++) {
+      hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+    return '#' + "00000".substring(0, 6 - c.length) + c;
+  };
+
   // --- Render Assets Screen (Phase 16: Net Worth & Prettier Graph) ---
   const renderAssetsScreen = () => {
     const netWorthData = calculateNetWorthHistory();
-    const totalLiabilities = assets.filter(a => a.balance < 0).reduce((acc, a) => acc + a.balance, 0); // Negative number
+    const totalLiabilities = assets.filter(a => a.balance < 0).reduce((acc, a) => acc + a.balance, 0);
     const totalAssets = assets.filter(a => a.balance >= 0).reduce((acc, a) => acc + a.balance, 0) +
       goals.reduce((acc, g) => acc + g.savedAmount, 0);
-    const netWorth = totalAssets + totalLiabilities; // liabilities are negative
+    const netWorth = totalAssets + totalLiabilities;
+    const screenWidth = Dimensions.get("window").width;
+
+    // Vibrant Palette for Pie Chart
+    const CHART_COLORS = [
+      '#4ADE80', '#60A5FA', '#F472B6', '#A78BFA', '#FBBF24',
+      '#2DD4BF', '#FB7185', '#34D399', '#818CF8', '#FB923C'
+    ];
+
+    // Asset Breakdown Data
+    const positiveAssets = assets.filter(a => a.balance > 0);
+    const totalPositiveValue = positiveAssets.reduce((acc, a) => acc + a.balance, 0);
+
+    const pieData = positiveAssets.map((asset, index) => {
+      const percentage = ((asset.balance / totalPositiveValue) * 100).toFixed(1);
+      return {
+        name: `${percentage}% ${asset.name}`,
+        population: asset.balance,
+        color: CHART_COLORS[index % CHART_COLORS.length],
+        legendFontColor: "#CBD5E1",
+        legendFontSize: 12
+      };
+    }).sort((a, b) => b.population - a.population);
 
     return (
-      <View style={{ flex: 1, padding: 24 }}>
-        <Text style={styles.sectionTitle}>我的资产</Text>
+      <LinearGradient
+        colors={['#0F172A', '#1E3A5F']}
+        style={{ flex: 1 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
+        <SafeAreaView style={{ flex: 1 }}>
+          <Text style={[styles.sectionTitle, { paddingHorizontal: 24, paddingTop: 10 }]}>我的资产</Text>
 
-        {/* 1. Net Worth Card */}
-        <View style={styles.overviewCard}>
-          <View style={{ alignItems: 'center', marginBottom: 15 }}>
-            <Text style={styles.overviewLabel}>总净资产 (Net Worth)</Text>
-            <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#FFF', marginVertical: 5 }}>
-              RM {netWorth.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </Text>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#333', paddingTop: 15 }}>
-            <View>
-              <Text style={{ color: '#AAA', fontSize: 12 }}>总资产 (Assets)</Text>
-              <Text style={{ color: '#4CAF50', fontSize: 16, fontWeight: 'bold' }}>
-                RM {totalAssets.toLocaleString()}
-              </Text>
-            </View>
-            <View>
-              <Text style={{ color: '#AAA', fontSize: 12, textAlign: 'right' }}>总负债 (Liabilities)</Text>
-              <Text style={{ color: '#FF6B6B', fontSize: 16, fontWeight: 'bold', textAlign: 'right' }}>
-                RM {Math.abs(totalLiabilities).toLocaleString()}
-              </Text>
-            </View>
-          </View>
-        </View>
+          <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+            <View style={{ paddingHorizontal: 24 }}>
 
-        {/* 2. Global Trend Chart */}
-        <View style={{ marginVertical: 20 }}>
-          <Text style={{ color: '#888', marginBottom: 10, fontSize: 12 }}>最近30天净值走势</Text>
-          <LineChart
-            data={netWorthData}
-            width={Dimensions.get("window").width - 48}
-            height={180}
-            chartConfig={{
-              backgroundColor: "#1e1e1e",
-              backgroundGradientFrom: "#2C2C2E",
-              backgroundGradientTo: "#1e1e1e",
-              decimalPlaces: 0,
-              color: (opacity = 1) => `rgba(100, 255, 218, ${opacity})`, // Teal color
-              labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-              style: { borderRadius: 16 },
-              propsForDots: { r: "4", strokeWidth: "2", stroke: "#64FFDA" },
-              propsForBackgroundLines: { strokeDasharray: "" } // Solid lines
-            }}
-            bezier
-            style={{ borderRadius: 16, marginVertical: 8, ...Platform.select({ ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4 }, android: { elevation: 5 } }) }}
-          />
-        </View>
+              {/* 1. SEPARATED Header: Net Worth Card */}
+              <View style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                borderRadius: 24,
+                padding: 20,
+                marginBottom: 15,
+                borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+              }}>
+                <Text style={{ color: '#94A3B8', fontSize: 13, textAlign: 'center', letterSpacing: 1 }}>总净资产 (NET WORTH)</Text>
+                <Text style={{ fontSize: 28, fontWeight: 'bold', color: '#FFF', textAlign: 'center', marginVertical: 8 }}>
+                  RM {netWorth.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </Text>
 
-        {/* 3. Assets List */}
-        <Text style={[styles.sectionTitle, { marginTop: 10 }]}>账户列表</Text>
-        <ScrollView style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
-            {assets.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.assetCard, { width: '48%', marginBottom: 15, marginRight: 0 }]}
-                onPress={() => { setActiveAsset(item); setCurrentPage('asset_detail'); }}
-              >
-                <View style={styles.assetHeaderRow}>
-                  <View style={styles.assetIcon}>
-                    <Text style={{ fontSize: 16 }}>{item.icon}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 5, paddingHorizontal: 10 }}>
+                  <View>
+                    <Text style={{ color: '#64748B', fontSize: 12 }}>总资产 Assets</Text>
+                    <Text style={{ color: '#4ADE80', fontSize: 16, fontWeight: 'bold' }}>
+                      {totalAssets.toLocaleString()}
+                    </Text>
                   </View>
-                  <TouchableOpacity onPress={() => openEditAsset(item)}>
-                    <Text style={{ fontSize: 16, color: '#AAA' }}>...</Text>
+                  <View>
+                    <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'right' }}>总负债 Liabilities</Text>
+                    <Text style={{ color: '#F87171', fontSize: 16, fontWeight: 'bold', textAlign: 'right' }}>
+                      {Math.abs(totalLiabilities).toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* 2. SEPARATED Graph Card */}
+              <View style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                borderRadius: 24,
+                padding: 10,
+                marginBottom: 20,
+                borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
+                overflow: 'hidden'
+              }}>
+                <LineChart
+                  data={netWorthData}
+                  width={screenWidth - 48 - 20}
+                  height={180}
+                  yAxisLabel="" // REMOVING RM LABEL
+                  yAxisSuffix="k"
+                  withVerticalLabels={true}
+                  withHorizontalLabels={true}
+                  formatYLabel={(y) => (parseFloat(y) / 1000).toFixed(1)}
+                  chartConfig={{
+                    backgroundColor: "transparent",
+                    backgroundGradientFromOpacity: 0,
+                    backgroundGradientToOpacity: 0,
+                    fillShadowGradientFrom: '#6366F1',
+                    fillShadowGradientTo: '#1E1E1E',
+                    fillShadowGradientOpacity: 0.5,
+                    decimalPlaces: 1,
+                    color: (opacity = 1) => `rgba(129, 140, 248, ${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(148, 163, 184, ${opacity})`,
+                    propsForDots: { r: "3", strokeWidth: "2", stroke: "#818CF8" },
+                    propsForBackgroundLines: { stroke: "rgba(255,255,255,0.1)", strokeDasharray: "" }
+                  }}
+                  bezier
+                  style={{ marginTop: 10, borderRadius: 16 }}
+                />
+              </View>
+
+              {/* 3. Assets List Grid */}
+              <Text style={[styles.sectionTitle, { fontSize: 18, marginBottom: 15, color: '#E2E8F0' }]}>账户列表</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+                {assets.map((item) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={{
+                      width: '48%', marginBottom: 15,
+                      backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                      borderRadius: 16,
+                      padding: 15,
+                      borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
+                    }}
+                    onPress={() => { setActiveAsset(item); setCurrentPage('asset_detail'); }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                      <View style={{ backgroundColor: 'rgba(255,255,255,0.1)', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' }}>
+                        <Text style={{ fontSize: 18 }}>{item.icon}</Text>
+                      </View>
+                    </View>
+                    <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4 }}>{item.name}</Text>
+                    <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: 'bold' }}>RM {item.balance.toLocaleString()}</Text>
                   </TouchableOpacity>
+                ))}
+
+                {/* Add Asset Button */}
+                <TouchableOpacity
+                  style={{
+                    width: '48%', height: 110, marginBottom: 15,
+                    borderRadius: 16,
+                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderStyle: 'dashed',
+                    justifyContent: 'center', alignItems: 'center'
+                  }}
+                  onPress={() => {
+                    setNewAssetName(''); setNewAssetBalance(''); setNewAssetIcon('💰');
+                    setEditingAssetId(null); setAssetModalVisible(true);
+                  }}
+                >
+                  <Text style={{ fontSize: 24, color: '#64748B', marginBottom: 5 }}>+</Text>
+                  <Text style={{ color: '#64748B', fontSize: 12 }}>添加账户</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 4. Improved Asset Distribution Pie Chart */}
+              {positiveAssets.length > 0 && (
+                <View style={{ marginTop: 20, marginBottom: 30, alignItems: 'center' }}>
+                  <Text style={[styles.sectionTitle, { fontSize: 18, marginBottom: 15, color: '#E2E8F0', alignSelf: 'flex-start' }]}>资产分布</Text>
+                  <PieChart
+                    data={pieData}
+                    width={screenWidth - 48}
+                    height={200}
+                    chartConfig={{
+                      color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                    }}
+                    accessor={"population"}
+                    backgroundColor={"transparent"}
+                    paddingLeft={"15"}
+                    absolute
+                  />
                 </View>
-                <View>
-                  <Text style={styles.assetName}>{item.name}</Text>
-                  <Text style={[styles.assetBalance, { color: item.balance >= 0 ? '#FFF' : '#FF6B6B' }]}>
-                    RM {item.balance.toLocaleString('en-MY')}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-            {/* Add Asset Button */}
-            <TouchableOpacity
-              style={[styles.assetCard, { width: '48%', marginBottom: 15, marginRight: 0, justifyContent: 'center', alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: '#555', backgroundColor: 'transparent' }]}
-              onPress={() => setAssetModalVisible(true)}
-            >
-              <Text style={{ fontSize: 30, color: '#555' }}>+</Text>
-              <Text style={{ color: '#555', marginTop: 5 }}>添加账户</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={{ height: 100 }} />
-        </ScrollView>
-      </View>
+              )}
+
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </LinearGradient>
     );
   };
-
   // --- Render Month Picker Modal (Phase 12) ---
   const renderMonthPickerModal = () => {
     const years = [2023, 2024, 2025, 2026, 2027];
@@ -1048,6 +1670,8 @@ export default function App() {
   };
 
   // --- Render Calendar Modal (Phase 9) ---
+
+  // --- Render Calendar Modal (Phase 9 + Phase 24 Week Picker) ---
   const renderCalendarModal = () => {
     const year = calendarCursor.getFullYear();
     const month = calendarCursor.getMonth(); // 0-11
@@ -1057,14 +1681,17 @@ export default function App() {
     const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0(Sun) - 6(Sat)
 
     const days = [];
-    // Empty slots for previous month
-    for (let i = 0; i < firstDayOfWeek; i++) {
-      days.push(null);
-    }
-    // Days of current month
-    for (let i = 1; i <= daysInMonth; i++) {
-      days.push(new Date(year, month, i));
-    }
+    for (let i = 0; i < firstDayOfWeek; i++) days.push(null);
+    for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i));
+
+    // Helper to check if a date matches the selected stats week
+    const isSameWeek = (d1, d2) => {
+      if (!d1 || !d2) return false;
+      // Get start of week for both
+      const start1 = new Date(d1); start1.setDate(start1.getDate() - start1.getDay() + (start1.getDay() === 0 ? -6 : 1));
+      const start2 = new Date(d2); start2.setDate(start2.getDate() - start2.getDay() + (start2.getDay() === 0 ? -6 : 1));
+      return start1.toDateString() === start2.toDateString();
+    };
 
     return (
       <Modal animationType="fade" transparent={true} visible={calendarVisible} onRequestClose={() => setCalendarVisible(false)}>
@@ -1091,38 +1718,55 @@ export default function App() {
             {/* Days Grid */}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
               {days.map((date, index) => {
-                if (!date) return <View key={index} style={{ width: '14.2%', aspectRatio: 1 }} />; // Empty slot
+                if (!date) return <View key={index} style={{ width: '14.2%', aspectRatio: 1 }} />;
 
-                const dateStr = date.toISOString().split('T')[0];
-                const isSelected = dateStr === transactionDate;
+                const y = date.getFullYear();
+                const m = String(date.getMonth() + 1).padStart(2, '0');
+                const d = String(date.getDate()).padStart(2, '0');
+                const dateStr = `${y}-${m}-${d}`;
+
+                // Selection Logic
+                let isSelected = false;
+                if (currentPage === 'stats' && statsRange === 'weekly') {
+                  isSelected = isSameWeek(date, currentMonth);
+                } else if (currentPage === 'home' || !currentPage) {
+                  // Transaction Date Picker
+                  // Note: 'dateStr' is localized manually above, 'transactionDate' is YYYY-MM-DD
+                  isSelected = dateStr === transactionDate;
+                }
+
                 const isToday = date.toDateString() === new Date().toDateString();
 
                 return (
                   <TouchableOpacity
                     key={index}
                     style={{
-                      width: '14.2%',
-                      aspectRatio: 1,
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      borderRadius: 20,
-                      backgroundColor: isSelected ? '#E57373' : (isToday ? 'rgba(255,255,255,0.1)' : 'transparent')
+                      width: '14.2%', aspectRatio: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 20,
+                      backgroundColor: isSelected ? '#6366F1' : (isToday ? 'rgba(255,255,255,0.1)' : 'transparent')
                     }}
                     onPress={() => {
-                      setTransactionDate(dateStr);
-                      setCalendarVisible(false);
+                      if (currentPage === 'stats' && statsRange === 'weekly') {
+                        // Select Week
+                        // Set currentMonth to the Monday of this week? Or just the date.
+                        // getWeekRange handles logic from any date.
+                        setCurrentMonth(date);
+                        setCalendarVisible(false);
+                      } else {
+                        // Default: Transaction Date Picker
+                        setTransactionDate(dateStr);
+                        setCalendarVisible(false);
+                        // Auto Open Time Picker? No, user might just want date.
+                      }
                     }}
                   >
-                    <Text style={{
-                      color: isSelected ? '#FFF' : '#DDD', // Light text for dark bg
-                      fontWeight: isSelected || isToday ? 'bold' : 'normal'
-                    }}>{date.getDate()}</Text>
+                    <Text style={{ color: isSelected ? '#FFF' : (isToday ? '#4A90E2' : '#FFF'), fontWeight: isSelected || isToday ? 'bold' : 'normal' }}>
+                      {date.getDate()}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-
-            <TouchableOpacity style={{ marginTop: 15, padding: 10, alignSelf: 'center' }} onPress={() => setCalendarVisible(false)}>
+            <TouchableOpacity style={{ marginTop: 15, padding: 10, alignItems: 'center' }} onPress={() => setCalendarVisible(false)}>
               <Text style={{ color: '#888' }}>取消</Text>
             </TouchableOpacity>
           </View>
@@ -1130,12 +1774,13 @@ export default function App() {
       </Modal>
     );
   };
+  ;
 
 
 
   // --- Render Budget Modal (Phase 15) ---
   const renderBudgetModal = () => {
-    const currentExpense = Math.abs(getStats('monthly', new Date()).totalExpense);
+    const currentExpense = getStats('monthly', new Date(), 'expense').total;
     const budget = parseFloat(monthlyBudget) || 0;
     const remaining = budget - currentExpense;
     // const percentage = budget > 0 ? (remaining / budget) * 100 : 0;
@@ -1209,8 +1854,17 @@ export default function App() {
     return (
       <View style={{ flex: 1, padding: 24 }}>
         {/* Header */}
-        <TouchableOpacity style={styles.backButton} onPress={() => setCurrentPage(activeTransaction.fromPage || 'home')}>
-          <Text style={{ color: '#4A90E2', fontSize: 16 }}>◀ 返回</Text>
+        <TouchableOpacity
+          style={{
+            position: 'absolute', top: 50, left: 24, zIndex: 50,
+            width: 44, height: 44, borderRadius: 22,
+            backgroundColor: 'rgba(255,255,255,0.1)',
+            justifyContent: 'center', alignItems: 'center',
+            borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)'
+          }}
+          onPress={() => setCurrentPage(activeTransaction.fromPage || 'home')}
+        >
+          <Text style={{ fontSize: 20, color: '#FFF', marginLeft: -2 }}>◀</Text>
         </TouchableOpacity>
 
         {/* Hero Section */}
@@ -1218,11 +1872,21 @@ export default function App() {
           <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', marginBottom: 20 }}>
             <Text style={{ fontSize: 40 }}>{activeTransaction.icon}</Text>
           </View>
-          <Text style={{ fontSize: 16, color: '#AAA', letterSpacing: 1, textTransform: 'uppercase' }}>{activeTransaction.type === 'expense' ? '支出' : '收入'}</Text>
-          <Text style={{ fontSize: 40, fontWeight: 'bold', color: isExpense ? '#FF6B6B' : '#4CAF50', marginVertical: 10 }}>
-            {isExpense ? '-' : '+'} RM {Math.abs(activeTransaction.amount).toFixed(2)}
+          <Text style={{ fontSize: 16, color: '#AAA', letterSpacing: 1, textTransform: 'uppercase' }}>
+            {activeTransaction.type === 'expense' ? '支出' : (activeTransaction.type === 'income' ? '收入' : '转账 / 存入')}
           </Text>
-          <Text style={{ fontSize: 20, color: '#FFF' }}>{activeTransaction.title}</Text>
+          <Text style={{
+            fontSize: 40, fontWeight: 'bold',
+            color: activeTransaction.type === 'expense' ? '#FF6B6B' : (activeTransaction.type === 'income' ? '#4CAF50' : '#4A90E2'),
+            marginVertical: 10
+          }}>
+            {activeTransaction.type === 'expense' ? '-' : (activeTransaction.type === 'income' ? '+' : '')} RM {Math.abs(activeTransaction.amount).toFixed(2)}
+          </Text>
+          <Text style={{ fontSize: 20, color: '#FFF' }}>
+            {(activeTransaction.type === 'transfer' && (activeTransaction.title === '餐饮' || activeTransaction.title === 'Food'))
+              ? '转账'
+              : activeTransaction.title}
+          </Text>
         </View>
 
         {/* Info Grid */}
@@ -1236,11 +1900,26 @@ export default function App() {
             <Text style={{ color: '#FFF', fontSize: 16 }}>{dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
           <View style={{ width: '100%', backgroundColor: '#2C2C2C', padding: 15, borderRadius: 16, marginBottom: 15 }}>
-            <Text style={{ color: '#888', fontSize: 12, marginBottom: 5 }}>账户</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={{ fontSize: 16, marginRight: 8 }}>{activeTransaction.assetName}</Text>
-              {/* We could find asset icon but assetName is string in transaction. */}
-            </View>
+            <Text style={{ color: '#888', fontSize: 12, marginBottom: 5 }}>
+              {activeTransaction.type === 'transfer' ? '资金流向 (From → To)' : '账户'}
+            </Text>
+            {activeTransaction.type === 'transfer' ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 5 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 16, color: '#EF4444', fontWeight: 'bold' }}>{activeTransaction.assetName}</Text>
+                  <Text style={{ color: '#777', fontSize: 10, marginLeft: 4 }}>(Out)</Text>
+                </View>
+                <Text style={{ fontSize: 20, color: '#AAA' }}>➡️</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 16, color: '#10B981', fontWeight: 'bold' }}>{activeTransaction.toAssetName || '?'}</Text>
+                  <Text style={{ color: '#777', fontSize: 10, marginLeft: 4 }}>(In)</Text>
+                </View>
+              </View>
+            ) : (
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ fontSize: 16, marginRight: 8, color: '#FFF' }}>{activeTransaction.assetName}</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -1255,7 +1934,7 @@ export default function App() {
             <Text style={styles.addButtonText}>✏️ 编辑</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.addButton, { flex: 1, backgroundColor: '#333', borderColor: '#555', borderWidth: 1 }]} onPress={() => {
-            Alert.alert("删除交易", "确定要删除这条记录吗？", [
+            showAlert("删除交易", "确定要删除这条记录吗？", [
               { text: "取消", style: "cancel" },
               {
                 text: "删除", style: "destructive", onPress: () => {
@@ -1264,10 +1943,36 @@ export default function App() {
                   saveTransactions(updatedTransactions);
 
                   // Revert asset balance
+                  // Revert asset balance
                   const asset = assets.find(a => a.id === activeTransaction.assetId);
+
+                  // refundAmount: How much to ADD back to the asset.
+                  // For Expense: Add (+amount)
+                  // For Income: Deduct (-amount)
+                  // For Transfer (Source): Add (+amount)
+                  // For Transfer (Dest): Deduct (-amount)
+
+                  let refundAmount = 0;
+                  if (activeTransaction.type === 'expense') {
+                    refundAmount = Math.abs(activeTransaction.amount);
+                  } else if (activeTransaction.type === 'income') {
+                    refundAmount = -Math.abs(activeTransaction.amount);
+                  } else if (activeTransaction.type === 'transfer') {
+                    // Transfer logic
+                    refundAmount = Math.abs(activeTransaction.amount); // Always refund source
+                  }
+
                   if (asset) {
-                    const sign = activeTransaction.type === 'income' ? -1 : 1; // Reverse logic
-                    const updatedAssets = assets.map(a => a.id === asset.id ? { ...a, balance: a.balance + (activeTransaction.amount * sign) } : a);
+                    const updatedAssets = assets.map(a => a.id === asset.id ? { ...a, balance: a.balance + refundAmount } : a);
+
+                    // Specific handling for Internal Transfer (Reverse Destination)
+                    if (activeTransaction.subType === 'internal' && activeTransaction.toAssetId) {
+                      const toIndex = updatedAssets.findIndex(a => a.id === activeTransaction.toAssetId);
+                      if (toIndex !== -1) {
+                        updatedAssets[toIndex].balance -= Math.abs(activeTransaction.amount);
+                      }
+                    }
+
                     setAssets(updatedAssets);
                     saveAssets(updatedAssets);
                   }
@@ -1276,13 +1981,17 @@ export default function App() {
                   if (activeTransaction.goalId) {
                     const goal = goals.find(g => g.id === activeTransaction.goalId);
                     if (goal) {
-                      const updatedGoals = goals.map(g => g.id === goal.id ? { ...g, savedAmount: g.savedAmount - activeTransaction.amount } : g);
+                      // Reduce goal saved amount
+                      const updatedGoals = goals.map(g => g.id === goal.id ? { ...g, savedAmount: g.savedAmount - Math.abs(activeTransaction.amount) } : g);
                       setGoals(updatedGoals);
                       saveGoals(updatedGoals);
                     }
                   }
 
                   setCurrentPage(activeTransaction.fromPage || 'home');
+                  if (activeTransaction.type === 'transfer' && activeTransaction.subType === 'goal_deposit') {
+                    showAlert("已删除", `资金已退回到 ${activeTransaction.assetName}`);
+                  }
                 }
               }
             ]);
@@ -1310,9 +2019,20 @@ export default function App() {
     return (
       <View style={{ flex: 1, padding: 24 }}>
         {/* Header */}
-        <TouchableOpacity style={styles.backButton} onPress={() => setCurrentPage('home')}>
-          <Text style={{ color: '#4A90E2', fontSize: 16 }}>◀ 返回首页</Text>
+        <TouchableOpacity
+          style={{
+            position: 'absolute', top: 50, left: 24, zIndex: 50,
+            width: 44, height: 44, borderRadius: 22,
+            backgroundColor: 'rgba(255,255,255,0.1)',
+            justifyContent: 'center', alignItems: 'center',
+            borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)'
+          }}
+          onPress={() => setCurrentPage('home')}
+        >
+          <Text style={{ fontSize: 20, color: '#FFF', marginLeft: -2 }}>◀</Text>
         </TouchableOpacity>
+        {/* Spacer for absolute header */}
+        <View style={{ height: 40 }} />
 
         <View style={{ alignItems: 'center', marginVertical: 20 }}>
           <Text style={{ fontSize: 60, marginBottom: 10 }}>{activeGoal.icon}</Text>
@@ -1347,7 +2067,7 @@ export default function App() {
           </TouchableOpacity>
 
           <TouchableOpacity style={[styles.addButton, { flex: 1, marginLeft: 5, backgroundColor: '#333', borderWidth: 1, borderColor: '#555' }]} onPress={() => {
-            Alert.alert("删除目标", "确定要删除这个目标吗？已存金额将保留在目标中(需手动转出)。", [
+            showAlert("删除目标", "确定要删除这个目标吗？已存金额将保留在目标中(需手动转出)。", [
               { text: "取消", style: "cancel" },
               {
                 text: "删除", style: "destructive", onPress: async () => {
@@ -1373,7 +2093,6 @@ export default function App() {
                 key={item.id}
                 style={styles.transactionItem}
                 onPress={() => {
-                  setActiveTransaction({ ...item, fromPage: 'goal_detail' });
                   setCurrentPage('transaction_detail');
                 }}
               >
@@ -1384,7 +2103,12 @@ export default function App() {
                   <Text style={styles.transactionTitle}>{item.title}</Text>
                   <Text style={styles.transactionDate}>{new Date(item.date).toLocaleDateString()}</Text>
                 </View>
-                <Text style={styles.expenseAmount}>RM {Math.abs(item.amount)}</Text>
+                <Text style={{
+                  fontSize: 16, fontWeight: 'bold',
+                  color: item.type === 'expense' ? '#FF6B6B' : (item.type === 'income' ? '#4CAF50' : '#4A90E2') // Blue for Transfer
+                }}>
+                  {item.type === 'expense' ? '-' : (item.type === 'income' ? '+' : '')} RM {Math.abs(item.amount).toFixed(2)}
+                </Text>
               </TouchableOpacity>
             ))
           )}
@@ -1408,111 +2132,169 @@ export default function App() {
     </View>
   );
 
+  // --- Auth Check ---
+  if (!session) {
+    return <AuthScreen />;
+  }
+
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
+    <LinearGradient
+      colors={['#0F172A', '#1E3A5F']} // Deep Navy -> Slightly lighter Blue/Grey
+      style={styles.container}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+    >
+      <SafeAreaView style={{ flex: 1 }}>
+        <CustomAlert
+          visible={alertVisible}
+          title={alertConfig.title}
+          message={alertConfig.message}
+          buttons={alertConfig.buttons}
+          onClose={() => setAlertVisible(false)}
+        />
+        <StatusBar style="light" />
 
-      {/* Main Content Area */}
-      <View style={{ flex: 1 }}>
-        {currentPage === 'home' && (
-          <>
-            <ScrollView style={{ flex: 1 }}>
-              {/* 顶部面板 (Phase 15: Budget Widget) */}
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingTop: 10, paddingBottom: 10 }}>
-                <View>
-                  <Text style={{ color: '#AAA', fontSize: 13 }}>{new Date().getFullYear()}年</Text>
-                  <TouchableOpacity onPress={() => setMonthModalVisible(true)} style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Text style={{ color: '#FFF', fontSize: 22, fontWeight: 'bold', marginRight: 5 }}>
-                      {new Date().getMonth() + 1}月
-                    </Text>
-                    <Text style={{ fontSize: 14 }}>▼</Text>
+        {/* Main Content Area */}
+        <View style={{ flex: 1 }}>
+          {currentPage === 'home' && (
+            <>
+              <ScrollView style={{ flex: 1 }}>
+                {/* 顶部面板 (Phase 15: Budget Widget) */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingTop: 10, paddingBottom: 10 }}>
+                  <View>
+                    <Text style={{ color: '#AAA', fontSize: 13 }}>{new Date().getFullYear()}年</Text>
+                    <TouchableOpacity onPress={() => setMonthModalVisible(true)} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={{ color: '#FFF', fontSize: 22, fontWeight: 'bold', marginRight: 5 }}>
+                        {new Date().getMonth() + 1}月
+                      </Text>
+                      <Text style={{ fontSize: 14 }}>▼</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Sync Button (Debug) */}
+                  <TouchableOpacity
+                    style={{ padding: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, marginRight: 10 }}
+                    onPress={async () => {
+                      if (!session) { Alert.alert("Not Logged In"); return; }
+                      Alert.alert("Syncing...", "Uploading data to cloud...");
+                      const res = await SyncService.uploadLocalDataToCloud(session.user.id);
+                      if (res.success) Alert.alert("Success", "Manual Backup Complete!");
+                      else Alert.alert("Error", String(res.error));
+                    }}
+                  >
+                    <Text style={{ fontSize: 18 }}>☁️</Text>
+                  </TouchableOpacity>
+
+                  {/* Budget Widget */}
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#2C2C2E', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: '#444' }}
+                    onPress={() => {
+                      setNewBudgetAmount(monthlyBudget > 0 ? monthlyBudget.toString() : '');
+                      setBudgetModalVisible(true);
+                    }}
+                  >
+                    {monthlyBudget > 0 ? (
+                      <Text style={{ color: '#4A90E2', fontWeight: 'bold' }}>
+                        {(() => {
+                          const currentExpense = getStats('monthly', new Date(), 'expense').total;
+                          const left = monthlyBudget - currentExpense;
+                          // const percent = (left / monthlyBudget) * 100;
+                          return left >= 0 ? `💰 剩余 ${(left / monthlyBudget * 100).toFixed(0)}%` : `⚠️ 超支`;
+                        })()}
+                      </Text>
+                    ) : (
+                      <Text style={{ color: '#AAA' }}>🎯 设定预算</Text>
+                    )}
                   </TouchableOpacity>
                 </View>
 
-                {/* Budget Widget */}
-                <TouchableOpacity
-                  style={{ backgroundColor: '#2C2C2E', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: '#444' }}
-                  onPress={() => {
-                    setNewBudgetAmount(monthlyBudget > 0 ? monthlyBudget.toString() : '');
-                    setBudgetModalVisible(true);
-                  }}
-                >
-                  {monthlyBudget > 0 ? (
-                    <Text style={{ color: '#4A90E2', fontWeight: 'bold' }}>
-                      {(() => {
-                        const currentExpense = Math.abs(getStats('monthly', new Date()).totalExpense);
-                        const left = monthlyBudget - currentExpense;
-                        // const percent = (left / monthlyBudget) * 100;
-                        return left >= 0 ? `💰 剩余 ${(left / monthlyBudget * 100).toFixed(0)}%` : `⚠️ 超支`;
-                      })()}
-                    </Text>
+                {/* 月度概览 */}
+                <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
+                  <View style={styles.overviewCard}>
+                    <View style={styles.overviewRow}>
+                      <View>
+                        <Text style={styles.overviewLabel}>{new Date().getMonth() + 1}月支出</Text>
+                        <Text style={styles.overviewExpense}>RM {getStats('monthly', new Date(), 'expense').total.toFixed(2)}</Text>
+                      </View>
+                      <View>
+                        <Text style={styles.overviewLabel}>{new Date().getMonth() + 1}月收入</Text>
+                        <Text style={styles.overviewIncome}>RM {getStats('monthly', new Date(), 'income').total.toFixed(2)}</Text>
+                      </View>
+                    </View>
+
+                    {/* Net Balance (Phase 13) */}
+                    <View style={{ marginTop: 10, flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 16, marginRight: 5 }}>⚖️</Text>
+                      <Text style={{ color: '#888', marginRight: 5 }}>净收支:</Text>
+                      <Text style={{
+                        color: (getStats('monthly', new Date(), 'income').total - getStats('monthly', new Date(), 'expense').total) >= 0 ? '#4CAF50' : '#FF6B6B',
+                        fontWeight: 'bold', fontSize: 16
+                      }}>
+                        RM {(getStats('monthly', new Date(), 'income').total - getStats('monthly', new Date(), 'expense').total).toFixed(2)}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity style={styles.overviewButton} onPress={() => { setStatsRange('monthly'); setCurrentPage('stats'); }}>
+                      <Text style={styles.overviewButtonText}>📊 查看更多分析</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* 储蓄目标 */}
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>我的目标</Text>
+                  <TouchableOpacity onPress={() => setGoalModalVisible(true)}>
+                    <Text style={styles.linkText}>+ 添加</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.goalScroll}>
+                  {goals.length === 0 ? (
+                    <TouchableOpacity style={styles.emptyGoalCard} onPress={() => setGoalModalVisible(true)}>
+                      <Text style={{ color: '#888' }}>+ 定个小目标</Text>
+                    </TouchableOpacity>
                   ) : (
-                    <Text style={{ color: '#AAA' }}>🎯 设定预算</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              {/* 月度概览 */}
-              <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
-                <View style={styles.overviewCard}>
-                  <View style={styles.overviewRow}>
-                    <View>
-                      <Text style={styles.overviewLabel}>{new Date().getMonth() + 1}月支出</Text>
-                      <Text style={styles.overviewExpense}>RM {Math.abs(getStats('monthly', new Date()).totalExpense).toFixed(2)}</Text>
-                    </View>
-                    <View>
-                      <Text style={styles.overviewLabel}>{new Date().getMonth() + 1}月收入</Text>
-                      <Text style={styles.overviewIncome}>RM {getStats('monthly', new Date()).totalIncome.toFixed(2)}</Text>
-                    </View>
-                  </View>
-
-                  {/* Net Balance (Phase 13) */}
-                  <View style={{ marginTop: 10, flexDirection: 'row', alignItems: 'center' }}>
-                    <Text style={{ fontSize: 16, marginRight: 5 }}>⚖️</Text>
-                    <Text style={{ color: '#888', marginRight: 5 }}>净收支:</Text>
-                    <Text style={{
-                      color: (getStats('monthly', new Date()).totalIncome - Math.abs(getStats('monthly', new Date()).totalExpense)) >= 0 ? '#4CAF50' : '#FF6B6B',
-                      fontWeight: 'bold', fontSize: 16
-                    }}>
-                      RM {(getStats('monthly', new Date()).totalIncome - Math.abs(getStats('monthly', new Date()).totalExpense)).toFixed(2)}
-                    </Text>
-                  </View>
-
-                  <TouchableOpacity style={styles.overviewButton} onPress={() => { setStatsRange('monthly'); setCurrentPage('stats'); }}>
-                    <Text style={styles.overviewButtonText}>📊 查看更多分析</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* 储蓄目标 */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>我的目标</Text>
-                <TouchableOpacity onPress={() => setGoalModalVisible(true)}>
-                  <Text style={styles.linkText}>+ 添加</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.goalScroll}>
-                {goals.length === 0 ? (
-                  <TouchableOpacity style={styles.emptyGoalCard} onPress={() => setGoalModalVisible(true)}>
-                    <Text style={{ color: '#888' }}>+ 定个小目标</Text>
-                  </TouchableOpacity>
-                ) : (
-                  goals.map((goal) => {
-                    const progress = goal.targetAmount > 0 ? (goal.savedAmount / goal.targetAmount) : 0;
-                    const progressWidth = `${Math.min(progress * 100, 100)}%`;
-                    return (
-                      <TouchableOpacity key={goal.id}
-                        style={[styles.goalCard, { padding: 0 }]}
-                        onPress={() => {
-                          setActiveGoal(goal);
-                          setCurrentPage('goal_detail');
-                        }}
-                      >
-                        {goal.backgroundImage ? (
-                          <ImageBackground source={{ uri: goal.backgroundImage }} style={{ width: '100%', height: '100%' }} imageStyle={{ borderRadius: 20 }}>
-                            <View style={{ flex: 1, padding: 16, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, justifyContent: 'space-between' }}>
+                    goals.map((goal) => {
+                      const progress = goal.targetAmount > 0 ? (goal.savedAmount / goal.targetAmount) : 0;
+                      const progressWidth = `${Math.min(progress * 100, 100)}%`;
+                      return (
+                        <TouchableOpacity key={goal.id}
+                          style={[styles.goalCard, { padding: 0 }]}
+                          onPress={() => {
+                            setActiveGoal(goal);
+                            setCurrentPage('goal_detail');
+                          }}
+                        >
+                          {goal.backgroundImage ? (
+                            <ImageBackground source={{ uri: goal.backgroundImage }} style={{ width: '100%', height: '100%' }} imageStyle={{ borderRadius: 20 }}>
+                              <LinearGradient
+                                colors={['transparent', 'rgba(0,0,0,0.8)']}
+                                style={{
+                                  position: 'absolute',
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  height: '70%',
+                                  borderRadius: 20,
+                                }}
+                              />
+                              <View style={{ flex: 1, padding: 16, backgroundColor: 'transparent', borderRadius: 20, justifyContent: 'space-between' }}>
+                                <View style={styles.goalHeader}>
+                                  <View />
+                                  <Text style={styles.goalAmount}>RM {goal.savedAmount}</Text>
+                                </View>
+                                <View>
+                                  <Text style={styles.goalTitle}>{goal.title}</Text>
+                                  <Text style={styles.goalTarget}>目标: RM {goal.targetAmount}</Text>
+                                  <View style={styles.progressBarBg}>
+                                    <View style={[styles.progressBarFill, { width: progressWidth }]} />
+                                  </View>
+                                </View>
+                              </View>
+                            </ImageBackground>
+                          ) : (
+                            <View style={{ flex: 1, padding: 16, justifyContent: 'space-between' }}>
                               <View style={styles.goalHeader}>
-                                <View />
+                                <Text style={{ fontSize: 24 }}>{goal.icon}</Text>
                                 <Text style={styles.goalAmount}>RM {goal.savedAmount}</Text>
                               </View>
                               <View>
@@ -1523,462 +2305,600 @@ export default function App() {
                                 </View>
                               </View>
                             </View>
-                          </ImageBackground>
-                        ) : (
-                          <View style={{ flex: 1, padding: 16, justifyContent: 'space-between' }}>
-                            <View style={styles.goalHeader}>
-                              <Text style={{ fontSize: 24 }}>{goal.icon}</Text>
-                              <Text style={styles.goalAmount}>RM {goal.savedAmount}</Text>
-                            </View>
-                            <View>
-                              <Text style={styles.goalTitle}>{goal.title}</Text>
-                              <Text style={styles.goalTarget}>目标: RM {goal.targetAmount}</Text>
-                              <View style={styles.progressBarBg}>
-                                <View style={[styles.progressBarFill, { width: progressWidth }]} />
-                              </View>
-                            </View>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })
-                )}
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </ScrollView>
+
+                {/* 最近交易 */}
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>最近交易</Text>
+                  <TouchableOpacity onPress={() => {
+                    setModalVisible(true);
+                    // Initialize Date/Time to now
+                    const now = new Date();
+                    setTransactionDate(now.toISOString().split('T')[0]);
+                    setTransactionTime(now.toTimeString().split(' ')[0].substring(0, 5));
+                  }}><Text style={styles.linkText}>+ 记一笔</Text></TouchableOpacity>
+                </View>
+                <View style={styles.transactionList}>
+                  {currentMonthGroups.length === 0 ? (
+                    <Text style={styles.emptyText}>快记一笔吧！</Text>
+                  ) : (
+                    currentMonthGroups.map((group) => {
+                      const dateObj = new Date(group.title);
+                      const todayStr = new Date().toISOString().split('T')[0];
+                      const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+                      const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+                      let dateLabel = `${dateObj.getDate()} ${dateObj.toLocaleString('default', { month: 'short' })} ${dateObj.getFullYear()}`;
+                      if (group.title === todayStr) dateLabel += " (Today)";
+                      else if (group.title === yesterdayStr) dateLabel += " (Yesterday)";
+
+                      return (
+                        <View key={group.title} style={{ marginBottom: 15 }}>
+                          <Text style={{ color: '#888', fontWeight: 'bold', marginBottom: 5, marginLeft: 5 }}>{dateLabel}</Text>
+                          {group.data.map((item, index) => (
+                            <FadeInView key={item.id} style={{ marginBottom: 10 }} index={index}>
+                              <TouchableOpacity
+                                style={styles.transactionItem}
+                                onLongPress={() => {
+                                  // --- Smart Feature: Template Copy (Phase 20) ---
+                                  setAmount(Math.abs(item.amount).toString());
+                                  setNote(item.title);
+                                  setType(item.type);
+                                  setSelectedAssetId(item.assetId);
+                                  if (item.itemType === 'transfer') setToAssetId(item.toAssetId);
+
+                                  // Set Category
+                                  if (item.categoryId) {
+                                    const catGroup = item.type === 'expense' ? categories.expense : categories.income;
+                                    const foundCat = catGroup.find(c => c.id === item.categoryId);
+                                    if (foundCat) setSelectedCategory(foundCat);
+                                  }
+
+                                  // Set Date/Time to NOW (Instant Record)
+                                  const now = new Date();
+                                  setTransactionDate(now.toISOString().split('T')[0]);
+                                  setTransactionTime(now.toTimeString().split(' ')[0].substring(0, 5));
+
+                                  setEditingId(null); // Ensure it's a NEW transaction
+                                  setModalVisible(true);
+                                  showAlert("已复制", "已填入历史数据，金额日期可修改。");
+                                }}
+                                onPress={() => {
+                                  setActiveTransaction({ ...item, fromPage: 'home' });
+                                  setCurrentPage('transaction_detail');
+                                }}
+                              >
+                                <View style={styles.iconCircle}>
+                                  <Text style={styles.iconText}>{item.icon}</Text>
+                                </View>
+                                <View style={styles.transactionInfo}>
+                                  <Text style={styles.transactionTitle}>{item.title}</Text>
+                                  <Text style={styles.transactionDate}>
+                                    {dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • <Text style={{ color: '#4A90E2' }}>{item.assetName}</Text>
+                                  </Text>
+                                </View>
+                                <Text style={{
+                                  fontSize: 16, fontWeight: 'bold',
+                                  color: item.type === 'expense' ? '#FF6B6B' : (item.type === 'income' ? '#4CAF50' : '#4A90E2')
+                                }}>
+                                  {item.type === 'expense' ? '-' : (item.type === 'income' ? '+' : '')} RM {Math.abs(item.amount).toFixed(2)}
+                                </Text>
+                              </TouchableOpacity>
+                            </FadeInView>
+                          ))}
+                        </View>
+                      );
+                    })
+                  )}
+                </View>
+                <View style={{ height: 100 }} />
               </ScrollView>
 
-              {/* 最近交易 */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>最近交易</Text>
-                <TouchableOpacity onPress={() => {
+              {/* Floating Action Button (FAB) */}
+              <ScaleButton
+                style={styles.fab}
+                onPress={() => {
                   setModalVisible(true);
-                  // Initialize Date/Time to now
+                  // Initialize Date/Time to now (Local Time)
                   const now = new Date();
-                  setTransactionDate(now.toISOString().split('T')[0]);
+                  const year = now.getFullYear();
+                  const month = String(now.getMonth() + 1).padStart(2, '0');
+                  const day = String(now.getDate()).padStart(2, '0');
+                  setTransactionDate(`${year}-${month}-${day}`);
                   setTransactionTime(now.toTimeString().split(' ')[0].substring(0, 5));
-                }}><Text style={styles.linkText}>+ 记一笔</Text></TouchableOpacity>
-              </View>
-              <View style={styles.transactionList}>
-                {currentMonthGroups.length === 0 ? (
-                  <Text style={styles.emptyText}>快记一笔吧！</Text>
-                ) : (
-                  currentMonthGroups.map((group) => {
-                    const dateObj = new Date(group.title);
-                    const todayStr = new Date().toISOString().split('T')[0];
-                    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-                    const yesterdayStr = yesterday.toISOString().split('T')[0];
+                }}
+              >
+                <Text style={styles.fabText}>+</Text>
+              </ScaleButton>
+            </>
+          )}
 
-                    let dateLabel = `${dateObj.getDate()} ${dateObj.toLocaleString('default', { month: 'short' })} ${dateObj.getFullYear()}`;
-                    if (group.title === todayStr) dateLabel += " (Today)";
-                    else if (group.title === yesterdayStr) dateLabel += " (Yesterday)";
+          {currentPage === 'stats' && renderStatsScreen()}
+          {currentPage === 'assets' && renderAssetsScreen()}
+          {currentPage === 'asset_detail' && renderAssetDetailScreen()}
+          {currentPage === 'goal_detail' && renderGoalDetailScreen()}
+          {currentPage === 'transaction_detail' && renderTransactionDetailScreen()}
+        </View>
 
-                    return (
-                      <View key={group.title} style={{ marginBottom: 15 }}>
-                        <Text style={{ color: '#888', fontWeight: 'bold', marginBottom: 5, marginLeft: 5 }}>{dateLabel}</Text>
-                        {group.data.map((item) => (
-                          <TouchableOpacity
-                            key={item.id}
-                            style={styles.transactionItem}
-                            onPress={() => {
-                              setActiveTransaction({ ...item, fromPage: 'home' });
-                              setCurrentPage('transaction_detail');
-                            }}
-                          >
-                            <View style={styles.iconCircle}>
-                              <Text style={styles.iconText}>{item.icon}</Text>
-                            </View>
-                            <View style={styles.transactionInfo}>
-                              <Text style={styles.transactionTitle}>{item.title}</Text>
-                              <Text style={styles.transactionDate}>
-                                {dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • <Text style={{ color: '#4A90E2' }}>{item.assetName}</Text>
-                              </Text>
-                            </View>
-                            <Text style={item.type === 'expense' ? styles.expenseAmount : styles.incomeAmount}>
-                              {item.type === 'expense' ? '' : '+'} RM {Math.abs(item.amount).toFixed(2)}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    );
-                  })
-                )}
-              </View>
-              <View style={{ height: 100 }} />
-            </ScrollView>
+        {/* Footer Navigation */}
+        {renderBottomNav()}
 
-            {/* Floating Action Button (FAB) */}
-            <TouchableOpacity
-              style={styles.fab}
-              onPress={() => {
-                setModalVisible(true);
-                // Initialize Date/Time to now
-                const now = new Date();
-                setTransactionDate(now.toISOString().split('T')[0]);
-                setTransactionTime(now.toTimeString().split(' ')[0].substring(0, 5));
-              }}
-            >
-              <Text style={styles.fabText}>+</Text>
-            </TouchableOpacity>
-          </>
-        )}
+        {/* --- Modals --- */}
+        <Modal animationType="fade" transparent={true} visible={assetModalVisible} onRequestClose={() => setAssetModalVisible(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
+            <View style={styles.modalContentCenter}>
+              <Text style={styles.modalTitle}>{editingAssetId ? '✏️ 修改账户' : '添加新账户'}</Text>
+              <Text style={styles.inputLabel}>账户名称</Text>
+              <TextInput style={styles.input} placeholderTextColor="#555" value={newAssetName} onChangeText={setNewAssetName} autoFocus={true} />
+              <Text style={styles.inputLabel}>初始余额</Text>
+              <TextInput style={styles.input} placeholderTextColor="#555" keyboardType="numeric" value={newAssetBalance} onChangeText={setNewAssetBalance} />
 
-        {currentPage === 'stats' && renderStatsScreen()}
-        {currentPage === 'assets' && renderAssetsScreen()}
-        {currentPage === 'asset_detail' && renderAssetDetailScreen()}
-        {currentPage === 'goal_detail' && renderGoalDetailScreen()}
-        {currentPage === 'transaction_detail' && renderTransactionDetailScreen()}
-      </View>
-
-      {/* Footer Navigation */}
-      {renderBottomNav()}
-
-      {/* --- Modals --- */}
-      <Modal animationType="fade" transparent={true} visible={assetModalVisible} onRequestClose={() => setAssetModalVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
-          <View style={styles.modalContentCenter}>
-            <Text style={styles.modalTitle}>{editingAssetId ? '✏️ 修改账户' : '添加新账户'}</Text>
-            <Text style={styles.inputLabel}>账户名称</Text>
-            <TextInput style={styles.input} placeholderTextColor="#555" value={newAssetName} onChangeText={setNewAssetName} autoFocus={true} />
-            <Text style={styles.inputLabel}>初始余额</Text>
-            <TextInput style={styles.input} placeholderTextColor="#555" keyboardType="numeric" value={newAssetBalance} onChangeText={setNewAssetBalance} />
-
-            <Text style={styles.inputLabel}>图标 (Emoji)</Text>
-            <TextInput
-              style={[styles.input, { textAlign: 'center', fontSize: 30 }]}
-              placeholder="💰"
-              placeholderTextColor="#555"
-              value={newAssetIcon}
-              onChangeText={setNewAssetIcon}
-            />
-            {/* I need to add state for newAssetIcon later. For now, let's fix the UI structure first. 
+              <Text style={styles.inputLabel}>图标 (Emoji)</Text>
+              <TextInput
+                style={[styles.input, { textAlign: 'center', fontSize: 30 }]}
+                placeholder="💰"
+                placeholderTextColor="#555"
+                value={newAssetIcon}
+                onChangeText={setNewAssetIcon}
+              />
+              {/* I need to add state for newAssetIcon later. For now, let's fix the UI structure first. 
                 Wait, I should implement the state now. 
             */}
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setAssetModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddAsset}><Text style={styles.saveButtonText}>创建</Text></TouchableOpacity>
+              <View style={styles.modalButtons}>
+                <ScaleButton style={[styles.modalButton, styles.cancelButton]} onPress={() => setAssetModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></ScaleButton>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddAsset}><Text style={styles.saveButtonText}>创建</Text></TouchableOpacity>
+              </View>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          </KeyboardAvoidingView>
+        </Modal>
 
-      <Modal animationType="slide" transparent={true} visible={goalModalVisible} onRequestClose={() => setGoalModalVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
-          <View style={styles.modalContentCenter}>
-            <Text style={styles.modalTitle}>{editingGoalId ? '✏️ 修改目标' : '🎯 定个小目标'}</Text>
-            <Text style={styles.inputLabel}>目标名称</Text>
-            <TextInput style={styles.input} placeholder="我的梦想..." placeholderTextColor="#555" value={newGoalTitle} onChangeText={setNewGoalTitle} />
-            <Text style={styles.inputLabel}>目标金额</Text>
-            <TextInput style={styles.input} placeholder="0.00" placeholderTextColor="#555" keyboardType="numeric" value={newGoalTarget} onChangeText={setNewGoalTarget} />
+        <Modal animationType="slide" transparent={true} visible={goalModalVisible} onRequestClose={() => setGoalModalVisible(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
+            <View style={styles.modalContentCenter}>
+              <Text style={styles.modalTitle}>{editingGoalId ? '✏️ 修改目标' : '🎯 定个小目标'}</Text>
+              <Text style={styles.inputLabel}>目标名称</Text>
+              <TextInput style={styles.input} placeholder="我的梦想..." placeholderTextColor="#555" value={newGoalTitle} onChangeText={setNewGoalTitle} />
+              <Text style={styles.inputLabel}>目标金额</Text>
+              <TextInput style={styles.input} placeholder="0.00" placeholderTextColor="#555" keyboardType="numeric" value={newGoalTarget} onChangeText={setNewGoalTarget} />
 
-            <Text style={styles.inputLabel}>背景图片 (选填)</Text>
-            <TouchableOpacity onPress={pickImage} style={{ marginBottom: 15, padding: 15, backgroundColor: '#333', borderRadius: 12, alignItems: 'center' }}>
-              {newGoalImage ? (
-                <Image source={{ uri: newGoalImage }} style={{ width: '100%', height: 100, borderRadius: 10 }} resizeMode="cover" />
-              ) : (
-                <Text style={{ color: '#4A90E2' }}>📷 选择背景照片</Text>
-              )}
-            </TouchableOpacity>
+              <Text style={styles.inputLabel}>背景图片 (选填)</Text>
+              <TouchableOpacity onPress={pickImage} style={{ marginBottom: 15, padding: 15, backgroundColor: '#333', borderRadius: 12, alignItems: 'center' }}>
+                {newGoalImage ? (
+                  <Image source={{ uri: newGoalImage }} style={{ width: '100%', height: 100, borderRadius: 10 }} resizeMode="cover" />
+                ) : (
+                  <Text style={{ color: '#4A90E2' }}>📷 选择背景照片</Text>
+                )}
+              </TouchableOpacity>
 
-            <Text style={styles.inputLabel}>选择图标</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 20 }}>
-              {['🚗', '🏠', '✈️', '💍', '💻'].map(icon => (
-                <TouchableOpacity key={icon} onPress={() => setNewGoalIcon(icon)} style={{ padding: 10, backgroundColor: newGoalIcon === icon ? '#4A90E2' : '#333', borderRadius: 10 }}>
-                  <Text style={{ fontSize: 24 }}>{icon}</Text>
-                </TouchableOpacity>
-              ))}
+              <Text style={styles.inputLabel}>选择图标</Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 20 }}>
+                {['🚗', '🏠', '✈️', '💍', '💻'].map(icon => (
+                  <TouchableOpacity key={icon} onPress={() => setNewGoalIcon(icon)} style={{ padding: 10, backgroundColor: newGoalIcon === icon ? '#4A90E2' : '#333', borderRadius: 10 }}>
+                    <Text style={{ fontSize: 24 }}>{icon}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setGoalModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddGoal}><Text style={styles.saveButtonText}>确立目标</Text></TouchableOpacity>
+              </View>
             </View>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setGoalModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddGoal}><Text style={styles.saveButtonText}>确立目标</Text></TouchableOpacity>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        <Modal animationType="slide" transparent={true} visible={savingModalVisible} onRequestClose={() => setSavingModalVisible(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>💰 存入目标</Text>
+              <Text style={{ color: '#888', textAlign: 'center', marginBottom: 10 }}>为 {activeGoal?.title} 存一笔钱</Text>
+
+              <Text style={styles.inputLabel}>从哪个账户扣款?</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 15, maxHeight: 60 }}>
+                {assets.map((asset) => (
+                  <TouchableOpacity
+                    key={asset.id}
+                    style={[styles.selectAssetChip, selectedAssetId === asset.id && styles.selectAssetChipActive]}
+                    onPress={() => setSelectedAssetId(asset.id)}
+                  >
+                    <Text style={[styles.selectAssetText, selectedAssetId === asset.id && styles.selectAssetTextActive]}>
+                      {asset.name}
+                    </Text>
+                    <Text style={{ color: '#555', fontSize: 10 }}>RM {asset.balance}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              <Text style={styles.inputLabel}>存入金额</Text>
+              <TextInput style={styles.input} placeholder="0.00" placeholderTextColor="#555" keyboardType="numeric" value={savingAmount} onChangeText={setSavingAmount} autoFocus={true} />
+
+              {/* Date Input for Goal Deposit */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 }}>
+                <View style={{ flex: 1, marginRight: 10 }}>
+                  <Text style={styles.inputLabel}>日期 (YYYY-MM-DD)</Text>
+                  <TouchableOpacity onPress={() => {
+                    setCalendarCursor(new Date(transactionDate));
+                    setCalendarVisible(true);
+                  }}>
+                    <View pointerEvents="none">
+                      <TextInput style={styles.input} placeholder="YYYY-MM-DD" placeholderTextColor="#555" value={transactionDate} editable={false} />
+                    </View>
+                  </TouchableOpacity>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>时间 (HH:MM)</Text>
+                  <TextInput style={styles.input} placeholder="HH:MM" placeholderTextColor="#555" value={transactionTime} onChangeText={setTransactionTime} />
+                </View>
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setSavingModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleDepositToGoal}><Text style={styles.saveButtonText}>确认存入</Text></TouchableOpacity>
+              </View>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          </KeyboardAvoidingView>
+        </Modal>
 
-      <Modal animationType="slide" transparent={true} visible={savingModalVisible} onRequestClose={() => setSavingModalVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>💰 存入目标</Text>
-            <Text style={{ color: '#888', textAlign: 'center', marginBottom: 10 }}>为 {activeGoal?.title} 存一笔钱</Text>
+        <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => { setModalVisible(false); setEditingId(null); }}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
+            <View style={[styles.modalContent, { height: '98%', paddingBottom: 20 }]}>
 
-            <Text style={styles.inputLabel}>从哪个账户扣款?</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 15, maxHeight: 60 }}>
-              {assets.map((asset) => (
-                <TouchableOpacity
-                  key={asset.id}
-                  style={[styles.selectAssetChip, selectedAssetId === asset.id && styles.selectAssetChipActive]}
-                  onPress={() => setSelectedAssetId(asset.id)}
-                >
-                  <Text style={[styles.selectAssetText, selectedAssetId === asset.id && styles.selectAssetTextActive]}>
-                    {asset.name}
-                  </Text>
-                  <Text style={{ color: '#555', fontSize: 10 }}>RM {asset.balance}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <Text style={styles.inputLabel}>存入金额</Text>
-            <TextInput style={styles.input} placeholder="0.00" placeholderTextColor="#555" keyboardType="numeric" value={savingAmount} onChangeText={setSavingAmount} autoFocus={true} />
-
-            {/* Date Input for Goal Deposit */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 }}>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={styles.inputLabel}>日期 (YYYY-MM-DD)</Text>
+              {/* Header with Clear Button */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <Text style={[styles.modalTitle, { marginBottom: 0 }]}>{editingId ? '✏️ 修改账单' : '记一笔'}</Text>
                 <TouchableOpacity onPress={() => {
-                  setCalendarCursor(new Date(transactionDate));
-                  setCalendarVisible(true);
-                }}>
-                  <View pointerEvents="none">
-                    <TextInput style={styles.input} placeholder="YYYY-MM-DD" placeholderTextColor="#555" value={transactionDate} editable={false} />
-                  </View>
+                  setAmount(''); setNote('');
+                }} style={{ padding: 5 }}>
+                  <Text style={{ color: '#FF6B6B', fontSize: 14 }}>🗑️ 清空</Text>
                 </TouchableOpacity>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>时间 (HH:MM)</Text>
-                <TextInput style={styles.input} placeholder="HH:MM" placeholderTextColor="#555" value={transactionTime} onChangeText={setTransactionTime} />
-              </View>
-            </View>
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setSavingModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleDepositToGoal}><Text style={styles.saveButtonText}>确认存入</Text></TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => { setModalVisible(false); setEditingId(null); }}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{editingId ? '✏️ 修改账单' : '记一笔'}</Text>
-
-            <View style={styles.typeSelector}>
-              <TouchableOpacity style={[styles.typeButton, type === 'expense' && styles.typeButtonActive]} onPress={() => setType('expense')}>
-                <Text style={[styles.typeText, type === 'expense' && styles.typeTextActive]}>支出</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.typeButton, type === 'income' && styles.typeButtonActive]} onPress={() => setType('income')}>
-                <Text style={[styles.typeText, type === 'income' && styles.typeTextActive]}>收入</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* 账户选择区 */}
-            <Text style={styles.inputLabel}>选择账户 (Account)</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10, maxHeight: 45 }}>
-              {assets.map((asset) => (
+              {/* Date & Time Header (New) */}
+              <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 15 }}>
                 <TouchableOpacity
-                  key={asset.id}
-                  style={[styles.selectAssetChip, selectedAssetId === asset.id && styles.selectAssetChipActive]}
-                  onPress={() => setSelectedAssetId(asset.id)}
+                  style={{ backgroundColor: '#333', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, marginRight: 10 }}
+                  onPress={() => { setCalendarCursor(new Date(transactionDate)); setCalendarVisible(true); }}
                 >
-                  <Text style={[styles.selectAssetText, selectedAssetId === asset.id && styles.selectAssetTextActive]}>
-                    {asset.name}
-                  </Text>
+                  <Text style={{ color: '#FFF', fontSize: 16, fontWeight: 'bold' }}>📅 {transactionDate}</Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
+                <View style={{ backgroundColor: '#333', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12 }}>
+                  <TextInput
+                    style={{ color: '#FFF', fontSize: 16, fontWeight: 'bold', padding: 0 }}
+                    value={transactionTime}
+                    onChangeText={setTransactionTime}
+                    placeholder="HH:MM"
+                    placeholderTextColor="#555"
+                  />
+                </View>
+              </View>
 
-            {/* 分类选择区 (New) */}
-            <Text style={styles.inputLabel}>选择分类 (Category)</Text>
-            <View style={styles.categoryGrid}>
-              {(type === 'expense' ? categories.expense : categories.income).map((cat) => (
-                <TouchableOpacity
-                  key={cat.id}
-                  style={[styles.categoryItem, selectedCategory.id === cat.id && styles.categoryItemActive]}
-                  onPress={() => setSelectedCategory(cat)}
-                >
-                  <Text style={{ fontSize: 22 }}>{cat.icon}</Text>
-                  <Text style={[styles.categoryText, selectedCategory.id === cat.id && styles.categoryTextActive]}>{cat.name}</Text>
-                </TouchableOpacity>
-              ))}
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
 
-              {/* Add Category Button */}
-              <TouchableOpacity
-                style={[styles.categoryItem, { borderColor: '#555', borderStyle: 'dashed' }]}
-                onPress={() => setCategoryModalVisible(true)}
-              >
-                <Text style={{ fontSize: 24, color: '#555' }}>+</Text>
-              </TouchableOpacity>
-            </View>
+                <View style={styles.typeSelector}>
+                  <TouchableOpacity style={[styles.typeButton, type === 'expense' && styles.typeButtonActive]} onPress={() => setType('expense')}>
+                    <Text style={[styles.typeText, type === 'expense' && styles.typeTextActive]}>支出</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.typeButton, type === 'income' && styles.typeButtonActive]} onPress={() => setType('income')}>
+                    <Text style={[styles.typeText, type === 'income' && styles.typeTextActive]}>收入</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.typeButton, type === 'transfer' && styles.typeButtonActive]} onPress={() => setType('transfer')}>
+                    <Text style={[styles.typeText, type === 'transfer' && styles.typeTextActive]}>转账</Text>
+                  </TouchableOpacity>
+                </View>
 
-            {/* 金额输入 */}
-            <Text style={styles.inputLabel}>金额</Text>
-            <TextInput style={styles.input} placeholderTextColor="#555" keyboardType="numeric" value={amount} onChangeText={setAmount} />
+                {/* Asset Selector (From) */}
+                <Text style={styles.inputLabel}>{type === 'income' ? '存入账户' : (type === 'transfer' ? '转出账户 (From)' : '支付账户')}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10, maxHeight: 45 }}>
+                  {assets.map((asset) => (
+                    <TouchableOpacity
+                      key={asset.id}
+                      style={[styles.selectAssetChip, selectedAssetId === asset.id && styles.selectAssetChipActive]}
+                      onPress={() => setSelectedAssetId(asset.id)}
+                    >
+                      <Text style={[styles.selectAssetText, selectedAssetId === asset.id && styles.selectAssetTextActive]}>
+                        {asset.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
 
-            {/* 日期和时间输入 (Phase 7 & 9) */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={styles.inputLabel}>日期 (YYYY-MM-DD)</Text>
-                <TouchableOpacity onPress={() => {
-                  setCalendarCursor(new Date(transactionDate)); // Init calendar to current selection
-                  setCalendarVisible(true);
-                }}>
-                  <View pointerEvents="none">
-                    <TextInput style={styles.input} placeholder="YYYY-MM-DD" placeholderTextColor="#555" value={transactionDate} editable={false} />
+                {type === 'transfer' && (
+                  <View style={{ marginBottom: 5 }}>
+                    <Text style={styles.inputLabel}>转入账户 (To)</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10, maxHeight: 45 }}>
+                      {assets.map((asset) => (
+                        <TouchableOpacity
+                          key={asset.id}
+                          style={[styles.selectAssetChip, toAssetId === asset.id && styles.selectAssetChipActive]}
+                          onPress={() => setToAssetId(asset.id)}
+                        >
+                          <Text style={[styles.selectAssetText, toAssetId === asset.id && styles.selectAssetTextActive]}>
+                            {asset.name}
+                          </Text>
+                          <Text style={{ color: '#555', fontSize: 10 }}>RM {asset.balance}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
                   </View>
+                )}
+
+                {/* Category Selector (Hide for Transfer) */}
+                {type !== 'transfer' && (
+                  <>
+                    <Text style={styles.inputLabel}>选择分类 (Category)</Text>
+                    <View style={[styles.categoryGrid, { marginBottom: 5 }]}>
+                      {(type === 'expense' ? categories.expense : categories.income).map((cat) => (
+                        <TouchableOpacity
+                          key={cat.id}
+                          style={[styles.categoryItem, selectedCategory.id === cat.id && styles.categoryItemActive]}
+                          onPress={() => setSelectedCategory(cat)}
+                        >
+                          <Text style={{ fontSize: 22 }}>{cat.icon}</Text>
+                          <Text style={[styles.categoryText, selectedCategory.id === cat.id && styles.categoryTextActive]}>{cat.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+
+                      {/* Add Category Button */}
+                      <TouchableOpacity
+                        style={[styles.categoryItem, { borderColor: '#555', borderStyle: 'dashed' }]}
+                        onPress={() => setCategoryModalVisible(true)}
+                      >
+                        <Text style={{ fontSize: 24, color: '#555' }}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+
+
+
+
+              </ScrollView>
+
+              {/* Custom Calculator Keyboard (Phase 20) */}
+              <View style={{ marginTop: 5, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 5 }}>
+                {/* Fixed Amount & Note Section */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.inputLabel, { marginTop: 0, marginBottom: 2 }]}>金额</Text>
+                    <TouchableOpacity
+                      style={[styles.input, { marginBottom: 0, justifyContent: 'center', height: 40, paddingVertical: 0, paddingHorizontal: 10 }]}
+                      onPress={() => { }}
+                    >
+                      <Text style={{ fontSize: 24, fontWeight: 'bold', color: amount ? '#FFF' : '#555' }}>
+                        {amount || '0.00'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={{ width: 10 }} />
+
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.inputLabel, { marginTop: 0, marginBottom: 2 }]}>备注</Text>
+                    <TextInput
+                      style={[styles.input, { marginBottom: 0, height: 40, paddingVertical: 0, paddingHorizontal: 10, color: '#FFF', fontSize: 14 }]}
+                      placeholder="点击输入备注..."
+                      placeholderTextColor="#555"
+                      value={note}
+                      onChangeText={setNote}
+                    />
+                  </View>
+                </View>
+
+
+
+                <View style={styles.calcGrid}>
+                  {['7', '8', '9', '÷', '4', '5', '6', '×', '1', '2', '3', '-', '.', '0', '⌫', '+'].map((key) => (
+                    <TouchableOpacity
+                      key={key}
+                      style={[styles.calcKey, ['÷', '×', '-', '+'].includes(key) && styles.calcKeyOp, key === '⌫' && styles.calcKeyDel]}
+                      onPress={() => {
+                        if (key === '⌫') {
+                          setAmount(prev => prev.toString().slice(0, -1));
+                        } else if (['÷', '×', '-', '+'].includes(key)) {
+                          const op = key === '÷' ? '/' : (key === '×' ? '*' : key);
+                          setAmount(prev => prev.toString() + op);
+                        } else {
+                          setAmount(prev => prev.toString() + key);
+                        }
+                      }}
+                    >
+                      <Text style={[styles.calcKeyText, ['÷', '×', '-', '+'].includes(key) && styles.calcKeyTextOp]}>{key}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={{ flexDirection: 'row', marginTop: 20 }}>
+                  <ScaleButton style={[styles.modalButton, styles.cancelButton, { flex: 1, marginRight: 5 }]} onPress={() => { setModalVisible(false); setEditingId(null); }}>
+                    <Text style={styles.cancelButtonText}>取消</Text>
+                  </ScaleButton>
+
+                  {!editingId && (
+                    <ScaleButton style={[styles.modalButton, { backgroundColor: '#4CAF50', flex: 1, marginRight: 5 }]} onPress={() => handleSaveTransaction(false)}>
+                      <Text style={styles.saveButtonText}>再记一笔</Text>
+                    </ScaleButton>
+                  )}
+
+                  <ScaleButton style={[styles.modalButton, styles.saveButton, { flex: 1 }]} onPress={() => handleSaveTransaction(true)}>
+                    <Text style={styles.saveButtonText}>{amount.match(/[+\-*/]/) ? '计算 & 保存' : '保存'}</Text>
+                  </ScaleButton>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        <Modal animationType="fade" transparent={true} visible={categoryModalVisible} onRequestClose={() => setCategoryModalVisible(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
+            <View style={styles.modalContentCenter}>
+              <Text style={styles.modalTitle}>✨ 新建分类</Text>
+              <Text style={styles.inputLabel}>分类名称</Text>
+              <TextInput style={styles.input} placeholderTextColor="#555" value={newCatName} onChangeText={setNewCatName} autoFocus={true} />
+
+              <Text style={styles.inputLabel}>图标 (Emoji)</Text>
+              <TextInput
+                style={[styles.input, { textAlign: 'center', fontSize: 30 }]}
+                placeholder="🍕"
+                placeholderTextColor="#555"
+                value={newCatIcon}
+                onChangeText={setNewCatIcon}
+              />
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setCategoryModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddCategory}><Text style={styles.saveButtonText}>创建</Text></TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {renderCalendarModal()}
+        {renderMonthPickerModal()}
+        {renderBudgetModal()}
+
+        {/* Remark Input Modal (Phase 20) */}
+        <Modal animationType="fade" transparent={true} visible={remarkModalVisible} onRequestClose={() => setRemarkModalVisible(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={[styles.modalContainerCenter, { justifyContent: 'flex-start', paddingTop: 100 }]}>
+            <View style={styles.modalContentCenter}>
+              <Text style={styles.modalTitle}>📝 添加备注</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: '#333', marginTop: 10 }]}
+                placeholder="例如：奶茶 (可不填)"
+                placeholderTextColor="#555"
+                value={note}
+                onChangeText={setNote}
+                autoFocus={true}
+                returnKeyType="done"
+                onSubmitEditing={() => setRemarkModalVisible(false)}
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={[styles.modalButton, styles.saveButton, { width: '100%', marginTop: 10 }]} onPress={() => setRemarkModalVisible(false)}>
+                  <Text style={styles.saveButtonText}>确认</Text>
                 </TouchableOpacity>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>时间 (HH:MM)</Text>
-                <TextInput style={styles.input} placeholder="HH:MM" placeholderTextColor="#555" value={transactionTime} onChangeText={setTransactionTime} />
-              </View>
             </View>
-
-            {/* 备注输入 (Optional) */}
-            <Text style={styles.inputLabel}>备注 (选填)</Text>
-            <TextInput style={styles.input} placeholder="例如：奶茶 (可不填)" placeholderTextColor="#555" value={note} onChangeText={setNote} />
-
-            <View style={{ flexDirection: 'row', marginTop: 20 }}>
-              <TouchableOpacity style={[styles.modalButton, styles.cancelButton, { flex: 1, marginRight: 5 }]} onPress={() => { setModalVisible(false); setEditingId(null); }}>
-                <Text style={styles.cancelButtonText}>取消</Text>
-              </TouchableOpacity>
-
-              {!editingId && (
-                <TouchableOpacity style={[styles.modalButton, { backgroundColor: '#4CAF50', flex: 1, marginRight: 5 }]} onPress={() => handleSaveTransaction(false)}>
-                  <Text style={styles.saveButtonText}>再记一笔</Text>
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity style={[styles.modalButton, styles.saveButton, { flex: 1 }]} onPress={() => handleSaveTransaction(true)}>
-                <Text style={styles.saveButtonText}>保存</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      <Modal animationType="fade" transparent={true} visible={categoryModalVisible} onRequestClose={() => setCategoryModalVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalContainerCenter}>
-          <View style={styles.modalContentCenter}>
-            <Text style={styles.modalTitle}>✨ 新建分类</Text>
-            <Text style={styles.inputLabel}>分类名称</Text>
-            <TextInput style={styles.input} placeholderTextColor="#555" value={newCatName} onChangeText={setNewCatName} autoFocus={true} />
-
-            <Text style={styles.inputLabel}>图标 (Emoji)</Text>
-            <TextInput
-              style={[styles.input, { textAlign: 'center', fontSize: 30 }]}
-              placeholder="🍕"
-              placeholderTextColor="#555"
-              value={newCatIcon}
-              onChangeText={setNewCatIcon}
-            />
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={[styles.modalButton, styles.cancelButton]} onPress={() => setCategoryModalVisible(false)}><Text style={styles.cancelButtonText}>取消</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.saveButton]} onPress={handleAddCategory}><Text style={styles.saveButtonText}>创建</Text></TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {renderCalendarModal()}
-      {renderMonthPickerModal()}
-      {renderBudgetModal()}
-    </SafeAreaView >
+          </KeyboardAvoidingView>
+        </Modal>
+      </SafeAreaView>
+    </LinearGradient >
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#121212', paddingTop: Platform.OS === 'android' ? 40 : 0 },
-  header: { padding: 24, backgroundColor: '#1E1E1E', borderBottomLeftRadius: 30, borderBottomRightRadius: 30, marginBottom: 20, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 8 },
+  container: { flex: 1, backgroundColor: theme.colors.background, paddingTop: Platform.OS === 'android' ? 40 : 0 },
+  header: { padding: 24, backgroundColor: theme.colors.surface, borderBottomLeftRadius: 30, borderBottomRightRadius: 30, marginBottom: 20, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
   headerTopUser: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  greeting: { color: '#AAAAAA', fontSize: 14 },
-  smallAddButton: { backgroundColor: '#333', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
-  smallAddButtonText: { color: '#4A90E2', fontSize: 12, fontWeight: 'bold' },
-  label: { color: '#888', fontSize: 14, fontWeight: '600', letterSpacing: 1 },
-  balance: { color: '#FFF', fontSize: 32, fontWeight: 'bold', marginVertical: 10 },
+  greeting: { color: theme.colors.textSecondary, fontSize: 14 },
+  smallAddButton: { backgroundColor: theme.colors.surfaceHighlight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
+  smallAddButtonText: { color: theme.colors.primary, fontSize: 12, fontWeight: 'bold' },
+  label: { color: theme.colors.textSecondary, fontSize: 14, fontWeight: '600', letterSpacing: 1 },
+  balance: { color: theme.colors.text, fontSize: 32, fontWeight: 'bold', marginVertical: 10 },
   assetScroll: { marginTop: 15 },
-  assetCard: { backgroundColor: '#2C2C2C', padding: 12, borderRadius: 16, marginRight: 12, width: 130, height: 90, justifyContent: 'space-between' },
+  assetCard: { backgroundColor: theme.colors.surface, padding: 12, borderRadius: 16, marginRight: 12, width: 130, height: 90, justifyContent: 'space-between', borderWidth: 1, borderColor: theme.colors.border },
   assetHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
-  assetIcon: { backgroundColor: 'rgba(255,255,255,0.1)', width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  assetName: { color: '#AAAAAA', fontSize: 12, marginTop: 4 },
-  assetBalance: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+  assetIcon: { backgroundColor: theme.colors.surfaceHighlight, width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  assetName: { color: theme.colors.textSecondary, fontSize: 12, marginTop: 4 },
+  assetBalance: { color: theme.colors.text, fontSize: 15, fontWeight: 'bold' },
+
+  // --- Calculator Styles (Phase 20) ---
+  calcGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginTop: 2 },
+  calcKey: { width: '23%', height: 38, backgroundColor: '#333', borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 4 }, // Compact height (75% of 50)
+  calcKeyOp: { backgroundColor: '#4A90E2' },
+  calcKeyDel: { backgroundColor: '#FF6B6B' },
+  calcKeyText: { color: '#FFF', fontSize: 20, fontWeight: 'bold' },
+  calcKeyTextOp: { color: '#FFF' },
 
   // Goal Styles
   goalScroll: { paddingHorizontal: 24, marginBottom: 20, maxHeight: 150 },
-  emptyGoalCard: { width: 160, height: 120, backgroundColor: '#1E1E1E', borderRadius: 16, justifyContent: 'center', alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: '#333' },
-  goalCard: { backgroundColor: '#1E1E1E', padding: 16, borderRadius: 20, marginRight: 15, width: 160, height: 130, justifyContent: 'space-between' },
+  emptyGoalCard: { width: 160, height: 120, backgroundColor: theme.colors.surface, borderRadius: 16, justifyContent: 'center', alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: theme.colors.border },
+  goalCard: { backgroundColor: theme.colors.surface, padding: 16, borderRadius: 20, marginRight: 15, width: 160, height: 130, justifyContent: 'space-between', borderWidth: 1, borderColor: theme.colors.border },
   goalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  goalAmount: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-  goalTitle: { color: '#FFF', fontWeight: '600', fontSize: 16 },
-  goalTarget: { color: '#888', fontSize: 12 },
-  progressBarBg: { height: 6, backgroundColor: '#333', borderRadius: 3, marginTop: 10, width: '100%' },
-  progressBarFill: { height: 6, backgroundColor: '#4CAF50', borderRadius: 3 },
+  goalAmount: { color: theme.colors.text, fontWeight: 'bold', fontSize: 16 },
+  goalTitle: { color: theme.colors.text, fontWeight: '600', fontSize: 16 },
+  goalTarget: { color: theme.colors.textSecondary, fontSize: 12 },
+  progressBarBg: { height: 6, backgroundColor: theme.colors.background, borderRadius: 3, marginTop: 10, width: '100%' },
+  progressBarFill: { height: 6, backgroundColor: theme.colors.success, borderRadius: 3 },
 
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, marginBottom: 10 },
-  sectionTitle: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-  linkText: { color: '#4A90E2', fontSize: 14 },
+  sectionTitle: { color: theme.colors.text, fontSize: 18, fontWeight: 'bold' },
+  linkText: { color: theme.colors.primary, fontSize: 14 },
   transactionList: { flex: 1, paddingHorizontal: 24 },
-  emptyText: { color: '#555', textAlign: 'center', marginTop: 50, fontSize: 14 },
-  transactionItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E1E1E', padding: 16, borderRadius: 16, marginBottom: 12 },
-  iconCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', marginRight: 16 },
+  emptyText: { color: theme.colors.textSecondary, textAlign: 'center', marginTop: 50, fontSize: 14 },
+  transactionItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.surface, padding: 16, borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.02)' },
+  iconCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.colors.surfaceHighlight, justifyContent: 'center', alignItems: 'center', marginRight: 16 },
   iconText: { fontSize: 20 },
   transactionInfo: { flex: 1 },
-  transactionTitle: { color: '#FFF', fontSize: 16, fontWeight: '600', marginBottom: 4 },
-  transactionDate: { color: '#888', fontSize: 12 },
-  expenseAmount: { color: '#FF6B6B', fontSize: 16, fontWeight: 'bold' },
-  incomeAmount: { color: '#4CAF50', fontSize: 16, fontWeight: 'bold' },
+  transactionTitle: { color: theme.colors.text, fontSize: 16, fontWeight: '600', marginBottom: 4 },
+  transactionDate: { color: theme.colors.textSecondary, fontSize: 12 },
+  expenseAmount: { color: theme.colors.danger, fontSize: 16, fontWeight: 'bold' },
+  incomeAmount: { color: theme.colors.success, fontSize: 16, fontWeight: 'bold' },
   footer: { padding: 24, paddingBottom: 40, alignItems: 'center' },
-  addButton: { backgroundColor: '#4A90E2', width: '100%', height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', shadowColor: "#4A90E2", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 15, elevation: 8 },
+  addButton: { backgroundColor: theme.colors.primary, width: '100%', height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', shadowColor: theme.colors.primary, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 15, elevation: 8 },
   addButtonText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-  inputLabel: { color: '#AAAAAA', fontSize: 14, marginBottom: 8, marginTop: 10 },
-  input: { backgroundColor: '#2C2C2C', color: '#FFF', borderRadius: 12, padding: 16, fontSize: 18, borderWidth: 1, borderColor: '#333' },
+  inputLabel: { color: theme.colors.textSecondary, fontSize: 14, marginBottom: 4, marginTop: 5 },
+  input: { backgroundColor: theme.colors.background, color: theme.colors.text, borderRadius: 12, padding: 16, fontSize: 18, borderWidth: 1, borderColor: theme.colors.border },
 
   // Chip Styles
-  selectAssetChip: { paddingVertical: 8, paddingHorizontal: 16, backgroundColor: '#333', borderRadius: 20, marginRight: 8, borderWidth: 1, borderColor: '#333' },
-  selectAssetChipActive: { backgroundColor: '#1E3A5F', borderColor: '#4A90E2' },
-  selectAssetText: { color: '#888', fontWeight: 'bold', fontSize: 12 },
-  selectAssetTextActive: { color: '#4A90E2' },
+  selectAssetChip: { paddingVertical: 8, paddingHorizontal: 16, backgroundColor: theme.colors.surfaceHighlight, borderRadius: 20, marginRight: 8, borderWidth: 1, borderColor: theme.colors.border },
+  selectAssetChipActive: { backgroundColor: theme.colors.surface, borderColor: theme.colors.primary },
+  selectAssetText: { color: theme.colors.textSecondary, fontWeight: 'bold', fontSize: 12 },
+  selectAssetTextActive: { color: theme.colors.primary },
 
   // Category Grid Styles (New)
-  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 15, justifyContent: 'space-between' },
-  categoryItem: { width: '23%', aspectRatio: 1, backgroundColor: '#333', borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#333' },
-  categoryItemActive: { backgroundColor: '#1E3A5F', borderColor: '#4A90E2' },
-  categoryText: { color: '#888', fontSize: 12, marginTop: 4 },
-  categoryTextActive: { color: '#4A90E2', fontWeight: 'bold' },
+  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 5, justifyContent: 'space-between' },
+  categoryItem: { width: '23%', aspectRatio: 1, backgroundColor: theme.colors.surfaceHighlight, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginBottom: 8, borderWidth: 1, borderColor: theme.colors.border },
+  categoryItemActive: { backgroundColor: theme.colors.surface, borderColor: theme.colors.primary },
+  categoryText: { color: theme.colors.textSecondary, fontSize: 12, marginTop: 4 },
+  categoryTextActive: { color: theme.colors.primary, fontWeight: 'bold' },
 
   modalContainer: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' },
-  modalContent: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 24, paddingBottom: 50 },
+  modalContent: { backgroundColor: theme.colors.surface, borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 24, paddingBottom: 50, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
   modalContainerCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
-  modalContentCenter: { width: '85%', backgroundColor: '#1E1E1E', borderRadius: 24, padding: 24, paddingBottom: 30 },
-  modalTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
-  typeSelector: { flexDirection: 'row', marginBottom: 20, backgroundColor: '#333', borderRadius: 12, padding: 4 },
+  modalContentCenter: { width: '85%', backgroundColor: theme.colors.surface, borderRadius: 24, padding: 24, paddingBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  modalTitle: { color: theme.colors.text, fontSize: 24, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
+  typeSelector: { flexDirection: 'row', marginBottom: 10, backgroundColor: theme.colors.background, borderRadius: 12, padding: 4 },
   typeButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  typeButtonActive: { backgroundColor: '#4A90E2' },
-  typeText: { color: '#888', fontWeight: '600' },
+  typeButtonActive: { backgroundColor: theme.colors.primary },
+  typeText: { color: theme.colors.textSecondary, fontWeight: '600' },
   typeTextActive: { color: '#FFF', fontWeight: 'bold' },
   modalButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 30 },
   modalButton: { flex: 1, paddingVertical: 16, borderRadius: 16, alignItems: 'center' },
-  cancelButton: { backgroundColor: '#333', marginRight: 10 },
-  saveButton: { backgroundColor: '#4A90E2', marginLeft: 10 },
-  cancelButtonText: { color: '#FFF', fontWeight: '600', fontSize: 16 },
+  cancelButton: { backgroundColor: theme.colors.surfaceHighlight, marginRight: 10 },
+  saveButton: { backgroundColor: theme.colors.primary, marginLeft: 10 },
+  cancelButtonText: { color: theme.colors.text, fontWeight: '600', fontSize: 16 },
   saveButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
 
   // Stats / Overview Styles
-  overviewCard: { backgroundColor: '#1E1E1E', borderRadius: 20, padding: 20, borderColor: '#333', borderWidth: 1 },
+  overviewCard: { backgroundColor: theme.colors.surface, borderRadius: 20, padding: 20, borderColor: theme.colors.border, borderWidth: 1 },
   overviewRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
-  overviewLabel: { color: '#888', fontSize: 12, marginBottom: 5 },
-  overviewExpense: { color: '#FF6B6B', fontSize: 18, fontWeight: 'bold' },
-  overviewIncome: { color: '#4CAF50', fontSize: 18, fontWeight: 'bold' },
-  overviewButton: { backgroundColor: '#2C2C2C', padding: 12, borderRadius: 12, alignItems: 'center' },
-  overviewButtonText: { color: '#4A90E2', fontWeight: 'bold' },
+  overviewLabel: { color: theme.colors.textSecondary, fontSize: 12, marginBottom: 5 },
+  overviewExpense: { color: theme.colors.danger, fontSize: 18, fontWeight: 'bold' },
+  overviewIncome: { color: theme.colors.success, fontSize: 18, fontWeight: 'bold' },
+  overviewButton: { backgroundColor: theme.colors.surfaceHighlight, padding: 12, borderRadius: 12, alignItems: 'center' },
+  overviewButtonText: { color: theme.colors.primary, fontWeight: 'bold' },
 
-  statsHeader: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', padding: 20, backgroundColor: '#1E1E1E' },
-  monthChangeArrow: { fontSize: 24, color: '#4A90E2', padding: 10 },
-  monthTitle: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
+  statsHeader: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', padding: 20, backgroundColor: theme.colors.surface },
+  monthChangeArrow: { fontSize: 24, color: theme.colors.primary, padding: 10 },
+  monthTitle: { color: theme.colors.text, fontSize: 18, fontWeight: 'bold' },
   backButton: { paddingHorizontal: 20, paddingVertical: 10 },
-  chartCard: { margin: 20, padding: 10, backgroundColor: '#1E1E1E', borderRadius: 20, alignItems: 'center' },
-  chartTitle: { color: '#888', marginBottom: 10, alignSelf: 'flex-start', paddingLeft: 10 },
-  statRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#2C2C2C' },
-  statCatName: { color: '#FFF', fontSize: 16 },
-  statAmount: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+  chartCard: { margin: 20, padding: 10, backgroundColor: theme.colors.surface, borderRadius: 20, alignItems: 'center', borderWidth: 1, borderColor: theme.colors.border },
+  chartTitle: { color: theme.colors.textSecondary, marginBottom: 10, alignSelf: 'flex-start', paddingLeft: 10 },
+  statRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
+  statCatName: { color: theme.colors.text, fontSize: 16 },
+  statAmount: { color: theme.colors.text, fontSize: 16, fontWeight: '600' },
 
   // Bottom Navigation Styles
-  bottomNav: { flexDirection: 'row', backgroundColor: '#1E1E1E', paddingVertical: 15, paddingBottom: Platform.OS === 'ios' ? 30 : 15, borderTopWidth: 1, borderTopColor: '#333' },
+  bottomNav: { flexDirection: 'row', backgroundColor: theme.colors.surface, paddingVertical: 20, paddingBottom: Platform.OS === 'ios' ? 35 : 20, borderTopWidth: 1, borderTopColor: theme.colors.border },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  navText: { color: '#888', fontSize: 12, marginTop: 4 },
-  navTextActive: { color: '#4A90E2', fontWeight: 'bold' },
+  navText: { color: theme.colors.textSecondary, fontSize: 18, marginTop: 4 },
+  navTextActive: { color: theme.colors.primary, fontWeight: 'bold' },
 
   // Assets Page Styles
-  pageTitle: { color: '#FFF', fontSize: 28, fontWeight: 'bold', marginBottom: 20 },
+  pageTitle: { color: theme.colors.text, fontSize: 28, fontWeight: 'bold', marginBottom: 20 },
 
   // Floating Action Button
   fab: {
@@ -1988,10 +2908,10 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: '#4A90E2',
+    backgroundColor: theme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: "#4A90E2",
+    shadowColor: theme.colors.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.5,
     shadowRadius: 8,
