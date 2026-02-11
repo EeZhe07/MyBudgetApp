@@ -1,13 +1,16 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, TouchableWithoutFeedback, ScrollView, SafeAreaView, Platform, Modal, TextInput, KeyboardAvoidingView, Alert, Dimensions, ImageBackground, Image, Animated } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, TouchableWithoutFeedback, ScrollView, SafeAreaView, Platform, Modal, TextInput, KeyboardAvoidingView, Alert, Dimensions, ImageBackground, Image, Animated, Linking, BackHandler } from 'react-native';
 import React, { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PieChart, LineChart } from 'react-native-chart-kit';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as QuickActions from 'expo-quick-actions';
-// import { requestWidgetUpdate } from 'react-native-android-widget';
-// import { InfoWidget } from './widgets/InfoWidget';
+import { requestWidgetUpdate } from 'react-native-android-widget';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { InfoWidget } from './widgets/InfoWidget';
+import { ActionWidget } from './widgets/ActionWidget';
 import { supabase } from './lib/supabase';
 import { SyncService } from './lib/SyncService';
 import AuthScreen from './screens/AuthScreen';
@@ -267,6 +270,14 @@ export default function App() {
   const [monthModalVisible, setMonthModalVisible] = useState(false); // For Month Picker
   const [savingAmount, setSavingAmount] = useState('');
 
+  // Search & Filter State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchAssetFilter, setSearchAssetFilter] = useState(null);
+  const [searchCategoryFilter, setSearchCategoryFilter] = useState(null);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [searchAssetModalVisible, setSearchAssetModalVisible] = useState(false);
+  const [searchCategoryModalVisible, setSearchCategoryModalVisible] = useState(false);
+
   // 数据列表
   // 数据列表
   const [transactions, setTransactions] = useState([]);
@@ -354,6 +365,34 @@ export default function App() {
     loadData();
   }, []);
 
+  // --- Deep Link Handler (for Widget Quick Add) ---
+  useEffect(() => {
+    const handleDeepLink = (event) => {
+      const url = event.url || event;
+      if (url && url.includes('add')) {
+        // Auto-open Add Transaction Modal
+        const now = new Date();
+        setTransactionDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`);
+        setTransactionTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+        setType('expense');
+        setSelectedCategory(DEFAULT_CATEGORIES.expense[0]);
+        setAmount('');
+        setNote('');
+        setEditingId(null);
+        setModalVisible(true);
+      }
+    };
+
+    // Check if app was opened via deep link
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink(url);
+    });
+
+    // Listen for deep links while app is running
+    const subscription = Linking.addEventListener('url', handleDeepLink);
+    return () => subscription.remove();
+  }, []);
+
   const loadData = async () => {
     try {
       const transJson = await AsyncStorage.getItem(STORAGE_KEY);
@@ -400,7 +439,7 @@ export default function App() {
   const saveTransactions = async (data) => {
     try {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      updateWidgets(data, monthlyBudget);
+      // Widget update handled by useEffect
     } catch (e) { }
   };
   const saveAssets = async (data) => { try { await AsyncStorage.setItem(ASSETS_KEY, JSON.stringify(data)); } catch (e) { } };
@@ -409,36 +448,67 @@ export default function App() {
   const saveBudget = async (amount) => {
     try {
       await AsyncStorage.setItem(BUDGET_KEY, amount.toString());
-      updateWidgets(transactions, amount);
+      // Widget update handled by useEffect
     } catch (e) { }
   };
 
-  // --- Widget Update Helper ---
-  const updateWidgets = async () => {
-    // try {
-    //   // Calculate Today's Expense
-    //   const todayStr = new Date().toISOString().split('T')[0];
-    //   const todayExpense = transactions
-    //     .filter(t => t.type === 'expense' && t.date.startsWith(todayStr))
-    //     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  // --- Widget Update Effect ---
+  useEffect(() => {
+    const updateWidget = async () => {
+      try {
+        // Calculate Today's Expense
+        const todayStr = new Date().toISOString().split('T')[0];
+        const todayExpense = transactions
+          .filter(t => t.type === 'expense' && t.date.startsWith(todayStr))
+          .reduce((sum, t) => sum + Math.abs(t.amount), 0);
 
-    //   // Get Budget
-    //   const budgetVal = monthlyBudget || 0;
-    //   const currentMonthStr = new Date().toISOString().substring(0, 7);
-    //   const monthExpense = transactions
-    //     .filter(t => t.type === 'expense' && t.date.startsWith(currentMonthStr))
-    //     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-    //   const remaining = budgetVal - monthExpense;
+        await requestWidgetUpdate({
+          widgetName: 'InfoWidget',
+          renderWidget: () => <InfoWidget monthlyBudget={monthlyBudget} totalExpense={todayExpense} />,
+          widgetNotFound: () => console.log('InfoWidget not found on home screen'),
+        });
+        await requestWidgetUpdate({
+          widgetName: 'ActionWidget',
+          renderWidget: () => <ActionWidget />,
+          widgetNotFound: () => console.log('ActionWidget not found'),
+        });
+      } catch (err) {
+        // Expected in Expo Go
+      }
+    };
 
-    //   requestWidgetUpdate({
-    //     widgetName: 'InfoWidget',
-    //     renderWidget: () => <InfoWidget expense={todayExpense.toFixed(2)} budget={remaining.toFixed(2)} theme="dark" />,
-    //     widgetClassName: 'InfoWidget',
-    //   });
-    // } catch (e) {
-    //   console.log("Widget Update Failed (Non-Native Mode):", e);
-    // }
-  };
+    if (Platform.OS === 'android') {
+      updateWidget();
+    }
+  }, [transactions, monthlyBudget]); // Depend on transactions and budget to auto-update
+
+  // --- Android Back Button Handler ---
+  useEffect(() => {
+    const backAction = () => {
+      // Navigate back based on current page
+      if (currentPage === 'transaction_detail') {
+        setCurrentPage(activeTransaction?.fromPage || 'home');
+        return true; // Prevent default (exit app)
+      }
+      if (currentPage === 'asset_detail') {
+        setCurrentPage('assets');
+        return true;
+      }
+      if (currentPage === 'goal_detail') {
+        setCurrentPage('home');
+        return true;
+      }
+      if (currentPage === 'settings' || currentPage === 'stats' || currentPage === 'assets') {
+        setCurrentPage('home');
+        return true;
+      }
+      // On home page: let default behavior (exit app) happen
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [currentPage, activeTransaction]);
 
   // --- 计算总资产 (Assets + Goals) ---
   const totalAssetBalance = assets.reduce((acc, item) => acc + parseFloat(item.balance), 0) +
@@ -447,8 +517,8 @@ export default function App() {
   // --- 统计计算 Helper ---
   // --- 统计计算 Helper ---
   // --- Helper: Get Statistics (Phase 4 & 22) ---
-  const getStats = (range = 'monthly', date = currentMonth, type = 'expense') => {
-    let filtered = transactions.filter(t => t.type === type); // Filter by type first
+  const getStats = (range = 'monthly', date = currentMonth, type = 'expense', dataSet = transactions) => {
+    let filtered = dataSet.filter(t => t.type === type); // Filter by type first
 
     const rangeDate = new Date(date);
     if (range === 'weekly') {
@@ -511,8 +581,33 @@ export default function App() {
       categoryMap[catId].population += Math.abs(t.amount);
     });
 
+    // Fixed vibrant color palette for pie chart
+    const CHART_COLORS = [
+      '#FF6B9D', // Hot Pink
+      '#6366F1', // Indigo
+      '#22D3EE', // Cyan
+      '#A78BFA', // Purple
+      '#F472B6', // Pink
+      '#38BDF8', // Sky Blue
+      '#C084FC', // Violet
+      '#FB923C', // Orange
+      '#34D399', // Emerald
+      '#FBBF24', // Amber
+      '#F87171', // Red
+      '#60A5FA', // Blue
+      '#E879F9', // Fuchsia
+      '#2DD4BF', // Teal
+      '#FCA5A1', // Salmon
+    ];
+
     const pieData = Object.values(categoryMap)
-      .sort((a, b) => b.population - a.population);
+      .sort((a, b) => b.population - a.population)
+      .map((item, index) => ({
+        ...item,
+        color: (item.color && item.color !== '#CCC' && item.color !== '#8395A7')
+          ? item.color
+          : CHART_COLORS[index % CHART_COLORS.length],
+      }));
 
     return { total, pieData };
   };
@@ -755,6 +850,7 @@ export default function App() {
         // Note: eval() is generally unsafe but strict regex above prevents malicious code. 
         // For a safer approach without eval, we'd write a parser. Given requirements, let's use a Function constructor for basic math.
         transAmount = new Function('return ' + cleanInput)();
+        transAmount = Math.round(transAmount * 100) / 100; // Fix floating point precision
       }
     } catch (e) {
       showAlert("Error", "Invalid Amount."); return;
@@ -970,15 +1066,38 @@ export default function App() {
   };
 
   const renderStatsScreen = () => {
-    // Determine Type Filter
-    // In update_stats.py, I injected `const [statsType, setStatsType] = useState('expense');`
-    // Assuming that state exists now.
+    // 1. Filter Logic
+    let statsData = transactions;
 
-    const stats = getStats(statsRange, currentMonth, statsType);
+    // Apply Filters (Global or View-based)
+    if (searchAssetFilter) {
+      statsData = statsData.filter(t => t.assetId === searchAssetFilter);
+    }
+    if (searchCategoryFilter) {
+      statsData = statsData.filter(t => t.categoryId === searchCategoryFilter);
+    }
 
-    const expenseStats = getStats(statsRange, currentMonth, 'expense');
-    const incomeStats = getStats(statsRange, currentMonth, 'income');
-    const netBalance = incomeStats.total - expenseStats.total;
+    // Search Mode Logic (Global Search)
+    let searchResults = null;
+    if (searchQuery) {
+      const lower = searchQuery.toLowerCase();
+      searchResults = transactions.filter(t => {
+        const matchesQuery = (t.title && t.title.toLowerCase().includes(lower)) ||
+          (t.amount.toString().includes(lower));
+        const matchesAsset = searchAssetFilter ? t.assetId === searchAssetFilter : true;
+        const matchesCategory = searchCategoryFilter ? t.categoryId === searchCategoryFilter : true;
+        return matchesQuery && matchesAsset && matchesCategory;
+      });
+      // Sort by date desc
+      searchResults.sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+
+    // Calculate Stats (using filtered data if filters active, otherwise standard)
+    // Note: getStats handles date range filtering internally on the passed dataSet
+    const currentStatsData = searchQuery ? [] : statsData;
+    const stats = getStats(statsRange, currentMonth, statsType, currentStatsData);
+    const expenseStats = getStats(statsRange, currentMonth, 'expense', currentStatsData);
+    const incomeStats = getStats(statsRange, currentMonth, 'income', currentStatsData);
 
     const screenWidth = Dimensions.get("window").width;
 
@@ -1007,205 +1126,342 @@ export default function App() {
               </View>
             </View>
 
-            {/* Date Navigator */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <TouchableOpacity onPress={() => {
-                const d = new Date(currentMonth);
-                if (statsRange === 'weekly') d.setDate(d.getDate() - 7);
-                else if (statsRange === 'monthly') d.setMonth(d.getMonth() - 1);
-                else d.setFullYear(d.getFullYear() - 1);
-                setCurrentMonth(d);
-              }}>
-                <Text style={{ fontSize: 22, color: '#6366F1' }}>◀</Text>
-              </TouchableOpacity>
+            {/* Date Navigator (Hidden if searching globally?) Maybe keep it for consistency but disable? */}
+            {!searchQuery && (
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+                <TouchableOpacity onPress={() => {
+                  const d = new Date(currentMonth);
+                  if (statsRange === 'weekly') d.setDate(d.getDate() - 7);
+                  else if (statsRange === 'monthly') d.setMonth(d.getMonth() - 1);
+                  else d.setFullYear(d.getFullYear() - 1);
+                  setCurrentMonth(d);
+                }}>
+                  <Text style={{ fontSize: 22, color: '#6366F1' }}>◀</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity onPress={() => {
-                if (statsRange === 'monthly') setMonthModalVisible(true);
-                if (statsRange === 'weekly') setCalendarVisible(true); // Reuse calendar for week
-                // Yearly? Maybe just use month picker for now or add year picker later
-              }}>
-                <Text style={{ color: '#FFF', fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>
-                  {statsRange === 'yearly' ? `${currentMonth.getFullYear()}年` :
-                    statsRange === 'monthly' ? `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月` :
-                      getWeekRange(currentMonth)}
-                </Text>
-                <Text style={{ color: '#AAA', fontSize: 12, textAlign: 'center' }}>
-                  {(statsRange === 'monthly' || statsRange === 'weekly') ? '▼' : ''}
-                </Text>
-              </TouchableOpacity>
+                <TouchableOpacity onPress={() => {
+                  if (statsRange === 'monthly') setMonthModalVisible(true);
+                  if (statsRange === 'weekly') setCalendarVisible(true);
+                }}>
+                  <Text style={{ color: '#FFF', fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>
+                    {statsRange === 'yearly' ? `${currentMonth.getFullYear()}年` :
+                      statsRange === 'monthly' ? `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月` :
+                        getWeekRange(currentMonth)}
+                  </Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity onPress={() => {
-                const d = new Date(currentMonth);
-                if (statsRange === 'weekly') d.setDate(d.getDate() + 7);
-                else if (statsRange === 'monthly') d.setMonth(d.getMonth() + 1);
-                else d.setFullYear(d.getFullYear() + 1);
-                setCurrentMonth(d);
-              }}>
-                <Text style={{ fontSize: 22, color: '#6366F1' }}>▶</Text>
-              </TouchableOpacity>
+                <TouchableOpacity onPress={() => {
+                  const d = new Date(currentMonth);
+                  if (statsRange === 'weekly') d.setDate(d.getDate() + 7);
+                  else if (statsRange === 'monthly') d.setMonth(d.getMonth() + 1);
+                  else d.setFullYear(d.getFullYear() + 1);
+                  setCurrentMonth(d);
+                }}>
+                  <Text style={{ fontSize: 22, color: '#6366F1' }}>▶</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* Search & Filter Bar */}
+          <View style={{ paddingHorizontal: 20, marginBottom: 10 }}>
+            <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 8, alignItems: 'center' }}>
+              <Text style={{ fontSize: 16, marginRight: 8, color: '#94A3B8' }}>🔍</Text>
+              <TextInput
+                style={{ flex: 1, color: '#FFF', fontSize: 16 }}
+                placeholder="搜索备注/金额 Search..."
+                placeholderTextColor="#64748B"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {searchQuery ? (
+                <TouchableOpacity onPress={() => setSearchQuery('')}>
+                  <Text style={{ color: '#94A3B8', fontSize: 16 }}>✕</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
+
+            {/* Filter Chips */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'center',
+                  backgroundColor: searchAssetFilter ? '#6366F1' : 'rgba(255,255,255,0.1)',
+                  paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginRight: 8
+                }}
+                onPress={() => setSearchAssetModalVisible(true)}
+              >
+                <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>
+                  {searchAssetFilter ? (assets.find(a => a.id === searchAssetFilter)?.name || 'Asset') : '账户 Asset'}
+                </Text>
+                <Text style={{ color: '#FFF', fontSize: 10, marginLeft: 4 }}>▼</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'center',
+                  backgroundColor: searchCategoryFilter ? '#6366F1' : 'rgba(255,255,255,0.1)',
+                  paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginRight: 8
+                }}
+                onPress={() => setSearchCategoryModalVisible(true)}
+              >
+                <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>
+                  {searchCategoryFilter ? ([...categories.expense, ...categories.income].find(c => c.id === searchCategoryFilter)?.name || 'Category') : '分类 Category'}
+                </Text>
+                <Text style={{ color: '#FFF', fontSize: 10, marginLeft: 4 }}>▼</Text>
+              </TouchableOpacity>
+
+              {(searchAssetFilter || searchCategoryFilter) && (
+                <TouchableOpacity onPress={() => { setSearchAssetFilter(null); setSearchCategoryFilter(null); }}>
+                  <Text style={{ color: '#F87171', fontSize: 12, marginLeft: 4, marginTop: 4 }}>Clear</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
           </View>
 
           <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
             <View style={{ paddingHorizontal: 20, paddingBottom: 100 }}>
 
-              {/* 2. Total Summary Card (Updated with Net Balance) */}
-              <View style={{
-                flexDirection: 'column',
-                backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 24, padding: 20, marginBottom: 24,
-                borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
-              }}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 }}>
-                  <View>
-                    <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4 }}>总收入 Income</Text>
-                    <Text style={{ color: '#4ADE80', fontSize: 20, fontWeight: 'bold' }}>
-                      + {incomeStats.total.toFixed(2)}
-                    </Text>
-                  </View>
-                  <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.1)' }} />
-                  <View>
-                    <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, textAlign: 'right' }}>总支出 Expense</Text>
-                    <Text style={{ color: '#F87171', fontSize: 20, fontWeight: 'bold', textAlign: 'right' }}>
-                      - {expenseStats.total.toFixed(2)}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Net Balance Row */}
-                <View style={{
-                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                  backgroundColor: 'rgba(0,0,0,0.2)', paddingVertical: 8, borderRadius: 12
-                }}>
-                  <Text style={{ fontSize: 16, marginRight: 8 }}>{netBalance >= 0 ? '💰' : '⚠️'}</Text>
-                  <Text style={{ color: '#CBD5E1', marginRight: 8, fontSize: 13 }}>结余 (Net Balance):</Text>
-                  <Text style={{
-                    color: netBalance >= 0 ? '#4ADE80' : '#F87171',
-                    fontWeight: 'bold', fontSize: 16
-                  }}>
-                    {netBalance >= 0 ? '+' : ''} RM {netBalance.toFixed(2)}
-                  </Text>
-                </View>
-              </View>
-
-              {/* 3. Type Toggle (Income | Expense) */}
-              <View style={{ flexDirection: 'row', marginBottom: 20, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 16, padding: 4 }}>
-                <TouchableOpacity onPress={() => setStatsType('expense')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'expense' ? '#FF6B6B' : 'transparent', borderRadius: 14 }}>
-                  <Text style={{ color: '#FFF', fontWeight: 'bold' }}>支出 Expense</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setStatsType('income')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'income' ? '#4CAF50' : 'transparent', borderRadius: 14 }}>
-                  <Text style={{ color: '#FFF', fontWeight: 'bold' }}>收入 Income</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* 4. Donut Chart Section (Custom Side Legend) */}
-              {stats.pieData.length > 0 ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 30, paddingHorizontal: 10 }}>
-
-                  {/* Left: Chart */}
-                  <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                    <View style={{ width: 180, height: 180, alignItems: 'center', justifyContent: 'center' }}>
-                      <PieChart
-                        data={stats.pieData}
-                        width={180}
-                        height={180}
-                        chartConfig={{ color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})` }}
-                        accessor={"population"}
-                        backgroundColor={"transparent"}
-                        paddingLeft={"45"} // Center in 180
-                        hasLegend={false}
-                        absolute
-                      />
-                      {/* Donut Hole */}
-                      <View style={{
-                        position: 'absolute',
-                        width: 70, height: 70, borderRadius: 35,
-                        backgroundColor: '#1E3A5F',
-                        justifyContent: 'center', alignItems: 'center'
-                      }} />
-                    </View>
-                  </View>
-
-                  {/* Right: Custom Legend */}
-                  <View style={{ flex: 1, paddingLeft: 20, justifyContent: 'center' }}>
-                    {stats.pieData.map((item, index) => {
-                      const percentage = ((item.population / stats.total) * 100).toFixed(1);
-                      return (
-                        <View key={index} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                          {/* Color Dot */}
-                          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: item.color, marginRight: 8 }} />
-                          {/* Name */}
-                          <Text style={{ color: '#E2E8F0', fontSize: 12, marginRight: 6, fontWeight: '600' }}>{item.name}</Text>
-                          {/* Percentage */}
-                          <Text style={{ color: '#94A3B8', fontSize: 12 }}>{percentage}%</Text>
+              {/* Search Results List */}
+              {searchQuery ? (
+                <View>
+                  <Text style={{ color: '#94A3B8', marginBottom: 10 }}>Found {searchResults.length} transactions</Text>
+                  {searchResults.map(item => (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                        backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 16, marginBottom: 10
+                      }}
+                      onPress={() => {
+                        setActiveTransaction({ ...item, fromPage: 'stats' });
+                        setCurrentPage('transaction_detail');
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
+                          <Text style={{ fontSize: 20 }}>{item.icon}</Text>
                         </View>
-                      );
-                    })}
-                  </View>
-
+                        <View>
+                          <Text style={{ color: '#FFF', fontSize: 16, fontWeight: 'bold' }}>{item.title}</Text>
+                          <Text style={{ color: '#94A3B8', fontSize: 12 }}>{item.date.split('T')[0]} • {item.assetName}</Text>
+                        </View>
+                      </View>
+                      <Text style={{
+                        color: item.type === 'expense' ? '#F87171' : (item.type === 'income' ? '#4ADE80' : '#60A5FA'),
+                        fontSize: 16, fontWeight: 'bold'
+                      }}>
+                        {item.type === 'expense' ? '-' : '+'} {Math.abs(item.amount).toFixed(2)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                  {searchResults.length === 0 && (
+                    <Text style={{ color: '#64748B', textAlign: 'center', marginTop: 40 }}>No results found.</Text>
+                  )}
                 </View>
               ) : (
-                <View style={{ height: 200, justifyContent: 'center', alignItems: 'center' }}>
-                  <Text style={{ fontSize: 40 }}>🍃</Text>
-                  <Text style={{ color: '#94A3B8', marginTop: 10 }}>没有记录</Text>
-                </View>
-              )}
-
-              {/* 5. Detailed Category List */}
-              <Text style={styles.sectionTitle}>分类详情</Text>
-              {stats.pieData.map((item, index) => {
-                const percentage = ((item.population / stats.total) * 100);
-                return (
-                  <View key={index} style={{
-                    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-                    marginBottom: 12, padding: 16,
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                    borderRadius: 16,
-                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'
+                <>
+                  {/* Standard Stats View (Filtered by Asset/Category if selected) */}
+                  {/* 2. Total Summary Card (Updated with Net Balance) */}
+                  <View style={{
+                    flexDirection: 'column',
+                    backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 24, padding: 20, marginBottom: 24,
+                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
                   }}>
-                    {/* Left: Icon */}
-                    <View style={{
-                      width: 44, height: 44, borderRadius: 22,
-                      backgroundColor: 'rgba(255,255,255,0.1)',
-                      justifyContent: 'center', alignItems: 'center', marginRight: 15
-                    }}>
-                      <Text style={{ fontSize: 20 }}>{item.icon}</Text>
-                    </View>
-
-                    {/* Middle: Name + Progress Bar */}
-                    <View style={{ flex: 1, marginRight: 15, justifyContent: 'center' }}>
-                      {/* Name */}
-                      <Text style={{ color: '#F1F5F9', fontSize: 15, fontWeight: '600', marginBottom: 6 }}>{item.name}</Text>
-
-                      {/* Progress Bar (Color matches category) */}
-                      <View style={{ height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
-                        <View style={{
-                          width: `${percentage}%`,
-                          height: '100%',
-                          backgroundColor: item.color,
-                          borderRadius: 3
-                        }} />
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 }}>
+                      <View>
+                        <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4 }}>总收入 Income</Text>
+                        <Text style={{ color: '#4ADE80', fontSize: 20, fontWeight: 'bold' }}>
+                          + {incomeStats.total.toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                      <View>
+                        <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, textAlign: 'right' }}>总支出 Expense</Text>
+                        <Text style={{ color: '#F87171', fontSize: 20, fontWeight: 'bold', textAlign: 'right' }}>
+                          - {expenseStats.total.toFixed(2)}
+                        </Text>
                       </View>
                     </View>
 
-                    {/* Right: Amount + % */}
-                    <View style={{ alignItems: 'flex-end' }}>
-                      {/* Amount */}
-                      <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: 'bold', marginBottom: 2 }}>
-                        RM {item.population.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
-                      </Text>
-                      {/* Percentage */}
-                      <Text style={{ color: '#94A3B8', fontSize: 12 }}>
-                        {percentage.toFixed(2)}%
+                    {/* Net Balance Row */}
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, paddingTop: 15, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' }}>
+                      <Text style={{ color: '#CBD5E1', fontSize: 14 }}>结余 Net Balance</Text>
+                      <Text style={{ color: '#FFF', fontSize: 22, fontWeight: 'bold' }}>
+                        RM {(incomeStats.total - expenseStats.total).toFixed(2)}
                       </Text>
                     </View>
                   </View>
-                );
-              })}
 
+                  {/* 3. Expense/Income Toggle */}
+                  <View style={{ flexDirection: 'row', marginBottom: 20, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 16, padding: 4 }}>
+                    <TouchableOpacity onPress={() => setStatsType('expense')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'expense' ? '#FF6B6B' : 'transparent', borderRadius: 14 }}>
+                      <Text style={{ color: '#FFF', fontWeight: 'bold' }}>支出 Expense</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setStatsType('income')} style={{ flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: statsType === 'income' ? '#4CAF50' : 'transparent', borderRadius: 14 }}>
+                      <Text style={{ color: '#FFF', fontWeight: 'bold' }}>收入 Income</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* 4. Donut Chart Section (Custom Side Legend) */}
+                  {stats.pieData.length > 0 ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 30, paddingHorizontal: 10 }}>
+
+                      {/* Left: Chart */}
+                      <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                        <View style={{ width: 180, height: 180, alignItems: 'center', justifyContent: 'center' }}>
+                          <PieChart
+                            data={stats.pieData}
+                            width={180}
+                            height={180}
+                            chartConfig={{ color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})` }}
+                            accessor={"population"}
+                            backgroundColor={"transparent"}
+                            paddingLeft={"45"} // Center in 180
+                            hasLegend={false}
+                            absolute
+                          />
+                          {/* Donut Hole */}
+                          <View style={{
+                            position: 'absolute',
+                            width: 70, height: 70, borderRadius: 35,
+                            backgroundColor: '#1E3A5F',
+                            justifyContent: 'center', alignItems: 'center'
+                          }} />
+                        </View>
+                      </View>
+
+                      {/* Right: Custom Legend */}
+                      <View style={{ flex: 1, paddingLeft: 20, justifyContent: 'center' }}>
+                        {stats.pieData.map((item, index) => {
+                          const percentage = ((item.population / stats.total) * 100).toFixed(1);
+                          return (
+                            <View key={index} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                              {/* Color Dot */}
+                              <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: item.color, marginRight: 8 }} />
+                              {/* Name */}
+                              <Text style={{ color: '#E2E8F0', fontSize: 12, marginRight: 6, fontWeight: '600' }}>{item.name}</Text>
+                              {/* Percentage */}
+                              <Text style={{ color: '#94A3B8', fontSize: 12 }}>{percentage}%</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+
+                    </View>
+                  ) : (
+                    <View style={{ height: 200, justifyContent: 'center', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 40 }}>🍃</Text>
+                      <Text style={{ color: '#94A3B8', marginTop: 10 }}>没有记录</Text>
+                    </View>
+                  )}
+
+                  {/* 5. Detailed Category List */}
+                  <Text style={styles.sectionTitle}>分类详情</Text>
+                  {stats.pieData.map((item, index) => {
+                    const percentage = ((item.population / stats.total) * 100);
+                    return (
+                      <View key={index} style={{
+                        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                        marginBottom: 12, padding: 16,
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                        borderRadius: 16,
+                        borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'
+                      }}>
+                        {/* Left: Icon */}
+                        <View style={{
+                          width: 44, height: 44, borderRadius: 22,
+                          backgroundColor: 'rgba(255,255,255,0.1)',
+                          justifyContent: 'center', alignItems: 'center', marginRight: 15
+                        }}>
+                          <Text style={{ fontSize: 20 }}>{item.icon}</Text>
+                        </View>
+
+                        {/* Middle: Name + Progress Bar */}
+                        <View style={{ flex: 1, marginRight: 15, justifyContent: 'center' }}>
+                          <Text style={{ color: '#F1F5F9', fontSize: 15, fontWeight: '600', marginBottom: 6 }}>{item.name}</Text>
+                          <View style={{ height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+                            <View style={{
+                              width: `${percentage}%`,
+                              height: '100%',
+                              backgroundColor: item.color,
+                              borderRadius: 3
+                            }} />
+                          </View>
+                        </View>
+
+                        {/* Right: Amount + % */}
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: 'bold', marginBottom: 2 }}>
+                            RM {item.population.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                          </Text>
+                          <Text style={{ color: '#94A3B8', fontSize: 12 }}>
+                            {percentage.toFixed(2)}%
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </>
+              )}
 
             </View>
           </ScrollView>
         </SafeAreaView>
+
+        {/* Filter Modals */}
+        <Modal animationType="slide" transparent={true} visible={searchAssetModalVisible} onRequestClose={() => setSearchAssetModalVisible(false)}>
+          <View style={styles.modalContainerCenter}>
+            <View style={[styles.modalContentCenter, { width: 300, maxHeight: 400 }]}>
+              <Text style={[styles.modalTitle, { marginBottom: 15 }]}>Filter by Asset</Text>
+              <ScrollView>
+                <TouchableOpacity style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#333' }} onPress={() => { setSearchAssetFilter(null); setSearchAssetModalVisible(false); }}>
+                  <Text style={{ color: '#FFF' }}>All Assets</Text>
+                </TouchableOpacity>
+                {assets.map(a => (
+                  <TouchableOpacity key={a.id} style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#333', flexDirection: 'row', alignItems: 'center' }} onPress={() => { setSearchAssetFilter(a.id); setSearchAssetModalVisible(false); }}>
+                    <Text style={{ fontSize: 18, marginRight: 10 }}>{a.icon}</Text>
+                    <Text style={{ color: '#FFF' }}>{a.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={{ marginTop: 15, alignItems: 'center' }} onPress={() => setSearchAssetModalVisible(false)}>
+                <Text style={{ color: '#F87171' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal animationType="slide" transparent={true} visible={searchCategoryModalVisible} onRequestClose={() => setSearchCategoryModalVisible(false)}>
+          <View style={styles.modalContainerCenter}>
+            <View style={[styles.modalContentCenter, { width: 300, maxHeight: 500 }]}>
+              <Text style={[styles.modalTitle, { marginBottom: 15 }]}>Filter by Category</Text>
+              <ScrollView>
+                <TouchableOpacity style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#333' }} onPress={() => { setSearchCategoryFilter(null); setSearchCategoryModalVisible(false); }}>
+                  <Text style={{ color: '#FFF' }}>All Categories</Text>
+                </TouchableOpacity>
+                <Text style={{ color: '#64748B', marginTop: 10, marginLeft: 10, fontSize: 12 }}>EXPENSE</Text>
+                {categories.expense.map(c => (
+                  <TouchableOpacity key={c.id} style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#333', flexDirection: 'row', alignItems: 'center' }} onPress={() => { setSearchCategoryFilter(c.id); setSearchCategoryModalVisible(false); }}>
+                    <Text style={{ fontSize: 18, marginRight: 10 }}>{c.icon}</Text>
+                    <Text style={{ color: '#FFF' }}>{c.name}</Text>
+                  </TouchableOpacity>
+                ))}
+                <Text style={{ color: '#64748B', marginTop: 10, marginLeft: 10, fontSize: 12 }}>INCOME</Text>
+                {categories.income.map(c => (
+                  <TouchableOpacity key={c.id} style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#333', flexDirection: 'row', alignItems: 'center' }} onPress={() => { setSearchCategoryFilter(c.id); setSearchCategoryModalVisible(false); }}>
+                    <Text style={{ fontSize: 18, marginRight: 10 }}>{c.icon}</Text>
+                    <Text style={{ color: '#FFF' }}>{c.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={{ marginTop: 15, alignItems: 'center' }} onPress={() => setSearchCategoryModalVisible(false)}>
+                <Text style={{ color: '#F87171' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
       </LinearGradient>
     );
   };
@@ -1578,22 +1834,104 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* 4. Improved Asset Distribution Pie Chart */}
+              {/* 4. Donut Ring Asset Distribution */}
               {positiveAssets.length > 0 && (
-                <View style={{ marginTop: 20, marginBottom: 30, alignItems: 'center' }}>
-                  <Text style={[styles.sectionTitle, { fontSize: 18, marginBottom: 15, color: '#E2E8F0', alignSelf: 'flex-start' }]}>资产分布</Text>
-                  <PieChart
-                    data={pieData}
-                    width={screenWidth - 48}
-                    height={200}
-                    chartConfig={{
-                      color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                    }}
-                    accessor={"population"}
-                    backgroundColor={"transparent"}
-                    paddingLeft={"15"}
-                    absolute
-                  />
+                <View style={{ marginTop: 20, marginBottom: 10 }}>
+                  <Text style={[styles.sectionTitle, { fontSize: 18, marginBottom: 15, color: '#E2E8F0' }]}>资产分布</Text>
+
+                  {/* Donut Ring + Side Legend */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 20, paddingHorizontal: 10 }}>
+                    {/* Left: Donut Chart */}
+                    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                      <View style={{ width: 180, height: 180, alignItems: 'center', justifyContent: 'center' }}>
+                        <PieChart
+                          data={pieData}
+                          width={180}
+                          height={180}
+                          chartConfig={{ color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})` }}
+                          accessor={"population"}
+                          backgroundColor={"transparent"}
+                          paddingLeft={"45"}
+                          hasLegend={false}
+                          absolute
+                        />
+                        {/* Donut Hole with Total */}
+                        <View style={{
+                          position: 'absolute',
+                          width: 70, height: 70, borderRadius: 35,
+                          backgroundColor: '#1E3A5F',
+                          justifyContent: 'center', alignItems: 'center'
+                        }}>
+                          <Text style={{ color: '#94A3B8', fontSize: 9 }}>总资产</Text>
+                          <Text style={{ color: '#FFF', fontSize: 11, fontWeight: 'bold' }}>
+                            RM {totalPositiveValue >= 1000 ? `${(totalPositiveValue / 1000).toFixed(1)}k` : totalPositiveValue.toFixed(0)}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Right: Side Legend */}
+                    <View style={{ flex: 1, paddingLeft: 20, justifyContent: 'center' }}>
+                      {pieData.map((item, index) => {
+                        const pct = ((item.population / totalPositiveValue) * 100).toFixed(1);
+                        return (
+                          <View key={index} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                            <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: item.color, marginRight: 8 }} />
+                            <Text style={{ color: '#E2E8F0', fontSize: 12, marginRight: 6, fontWeight: '600' }}>{item.name.replace(/[\d.]+%\s*/, '')}</Text>
+                            <Text style={{ color: '#94A3B8', fontSize: 12 }}>{pct}%</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* Detail Rows */}
+                  {pieData.map((item, index) => {
+                    const pct = ((item.population / totalPositiveValue) * 100);
+                    const assetName = item.name.replace(/[\d.]+%\s*/, '');
+                    const matchedAsset = assets.find(a => a.name === assetName);
+                    return (
+                      <View key={index} style={{
+                        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                        marginBottom: 12, padding: 16,
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                        borderRadius: 16,
+                        borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'
+                      }}>
+                        {/* Left: Icon */}
+                        <View style={{
+                          width: 44, height: 44, borderRadius: 22,
+                          backgroundColor: 'rgba(255,255,255,0.1)',
+                          justifyContent: 'center', alignItems: 'center', marginRight: 15
+                        }}>
+                          <Text style={{ fontSize: 20 }}>{matchedAsset?.icon || '💰'}</Text>
+                        </View>
+
+                        {/* Middle: Name + Progress Bar */}
+                        <View style={{ flex: 1, marginRight: 15, justifyContent: 'center' }}>
+                          <Text style={{ color: '#F1F5F9', fontSize: 15, fontWeight: '600', marginBottom: 6 }}>{assetName}</Text>
+                          <View style={{ height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+                            <View style={{
+                              width: `${pct}%`,
+                              height: '100%',
+                              backgroundColor: item.color,
+                              borderRadius: 3
+                            }} />
+                          </View>
+                        </View>
+
+                        {/* Right: Amount + % */}
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: 'bold', marginBottom: 2 }}>
+                            RM {item.population.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                          </Text>
+                          <Text style={{ color: '#94A3B8', fontSize: 12 }}>
+                            {pct.toFixed(1)}%
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
                 </View>
               )}
 
@@ -1845,6 +2183,20 @@ export default function App() {
     );
   };
 
+  // Helper: extract HH:MM from ISO date string or Date object
+  const getTimeStr = (dateInput) => {
+    if (!dateInput) return '--:--';
+    // If it's an ISO string like "2025-02-11T15:30:00.000Z", extract the time part
+    const str = typeof dateInput === 'string' ? dateInput : dateInput.toISOString();
+    // Try to parse from the original stored format YYYY-MM-DDTHH:MM
+    const match = str.match(/T(\d{2}):(\d{2})/);
+    if (match) {
+      // The time was stored from local input, so it represents local time
+      return `${match[1]}:${match[2]}`;
+    }
+    return '--:--';
+  };
+
   // --- Render Transaction Detail Screen (Phase 17) ---
   const renderTransactionDetailScreen = () => {
     if (!activeTransaction) return null;
@@ -1897,7 +2249,7 @@ export default function App() {
           </View>
           <View style={{ width: '48%', backgroundColor: '#2C2C2C', padding: 15, borderRadius: 16, marginBottom: 15 }}>
             <Text style={{ color: '#888', fontSize: 12, marginBottom: 5 }}>时间</Text>
-            <Text style={{ color: '#FFF', fontSize: 16 }}>{dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+            <Text style={{ color: '#FFF', fontSize: 16 }}>{getTimeStr(activeTransaction.date)}</Text>
           </View>
           <View style={{ width: '100%', backgroundColor: '#2C2C2C', padding: 15, borderRadius: 16, marginBottom: 15 }}>
             <Text style={{ color: '#888', fontSize: 12, marginBottom: 5 }}>
@@ -2006,7 +2358,9 @@ export default function App() {
   // --- Render Goal Detail Screen (Phase 8) ---
   const renderGoalDetailScreen = () => {
     if (!activeGoal) return null;
-    const progress = activeGoal.targetAmount > 0 ? (activeGoal.savedAmount / activeGoal.targetAmount) : 0;
+    const goalTarget = activeGoal.targetAmount || activeGoal.target_amount || 0;
+    const goalSaved = activeGoal.savedAmount || activeGoal.saved_amount || 0;
+    const progress = goalTarget > 0 ? (goalSaved / goalTarget) : 0;
     const progressWidth = `${Math.min(progress * 100, 100)}%`;
 
     // Filter transactions for this goal
@@ -2037,13 +2391,13 @@ export default function App() {
         <View style={{ alignItems: 'center', marginVertical: 20 }}>
           <Text style={{ fontSize: 60, marginBottom: 10 }}>{activeGoal.icon}</Text>
           <Text style={{ color: '#FFF', fontSize: 24, fontWeight: 'bold' }}>{activeGoal.title}</Text>
-          <Text style={{ color: '#888', fontSize: 14, marginTop: 5 }}>目标: RM {activeGoal.targetAmount.toLocaleString()}</Text>
+          <Text style={{ color: '#888', fontSize: 14, marginTop: 5 }}>目标: RM {(activeGoal.targetAmount || activeGoal.target_amount || 0).toLocaleString()}</Text>
         </View>
 
         {/* Progress */}
         <View style={{ marginBottom: 30 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}>
-            <Text style={{ color: '#4CAF50', fontWeight: 'bold' }}>已存: RM {activeGoal.savedAmount.toLocaleString()}</Text>
+            <Text style={{ color: '#4CAF50', fontWeight: 'bold' }}>已存: RM {(activeGoal.savedAmount || activeGoal.saved_amount || 0).toLocaleString()}</Text>
             <Text style={{ color: '#888' }}>{(progress * 100).toFixed(1)}%</Text>
           </View>
           <View style={[styles.progressBarBg, { height: 12, borderRadius: 6 }]}>
@@ -2117,6 +2471,161 @@ export default function App() {
     );
   };
 
+  // --- Export Data to CSV (Phase 26) ---
+  const exportToCSV = async () => {
+    try {
+      if (transactions.length === 0) {
+        Alert.alert("No Data", "No transactions to export.");
+        return;
+      }
+
+      // Build CSV Header
+      let csvContent = "Date,Time,Type,Category,Amount,Asset,Note\n";
+
+      // Build CSV Rows
+      transactions.forEach(t => {
+        const cat = [...categories.expense, ...categories.income].find(c => c.id === t.categoryId);
+        const catName = cat ? cat.name : (t.title || 'Uncategorized');
+        const time = t.date.includes('T') ? t.date.split('T')[1].substring(0, 5) : '00:00';
+
+        // CSV Escape logic
+        const note = (t.title || '').replace(/,/g, ' ');
+        const date = t.date.split('T')[0];
+
+        csvContent += `${date},${time},${t.type},${catName},${t.amount},${t.assetName || ''},${note}\n`;
+      });
+
+      // Save to temporary file
+      const fileUri = FileSystem.documentDirectory + 'mybudget_export.csv';
+      await FileSystem.writeAsStringAsync(fileUri, csvContent, { encoding: 'utf8' });
+
+      // Share
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri);
+      } else {
+        Alert.alert("Error", "Sharing is not available on this device");
+      }
+    } catch (error) {
+      console.error(error);
+      Alert.alert("Export Failed", String(error));
+    }
+  };
+
+  // --- Render Settings Screen ---
+  const renderSettingsScreen = () => (
+    <ScrollView style={{ flex: 1, padding: 20 }}>
+      <Text style={{ color: '#FFF', fontSize: 28, fontWeight: 'bold', marginTop: 40, marginBottom: 24 }}>⚙️ 设置</Text>
+
+      {/* User Info */}
+      <View style={{ backgroundColor: '#1E293B', borderRadius: 16, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: '#334155' }}>
+        <Text style={{ color: '#8B95B0', fontSize: 12, marginBottom: 4 }}>已登录</Text>
+        <Text style={{ color: '#FFF', fontSize: 16, fontWeight: 'bold' }}>{session?.user?.email || 'Unknown'}</Text>
+      </View>
+
+      {/* Data Management Section */}
+      <Text style={{ color: '#8B95B0', fontSize: 13, fontWeight: 'bold', marginBottom: 10, marginLeft: 4 }}>📊 数据管理 Data</Text>
+      <View style={{ backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' }}>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}
+          onPress={exportToCSV}
+        >
+          <Text style={{ fontSize: 22, marginRight: 14 }}>📤</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '600' }}>导出数据 (CSV)</Text>
+            <Text style={{ color: '#6B7599', fontSize: 12 }}>Export to Excel/Sheets</Text>
+          </View>
+          <Text style={{ color: '#6B7599', fontSize: 18 }}>›</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Cloud Sync Section */}
+      <Text style={{ color: '#8B95B0', fontSize: 13, fontWeight: 'bold', marginBottom: 10, marginLeft: 4 }}>☁️ 云同步 Cloud Sync</Text>
+      <View style={{ backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' }}>
+        {/* Upload / Backup */}
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#334155' }}
+          onPress={async () => {
+            if (!session) { Alert.alert('Not Logged In'); return; }
+            Alert.alert('Syncing...', 'Uploading data to cloud...');
+            const res = await SyncService.uploadLocalDataToCloud(session.user.id);
+            if (res.success) Alert.alert('Success ✅', 'Manual Backup Complete!');
+            else Alert.alert('Error', String(res.error));
+          }}
+        >
+          <Text style={{ fontSize: 22, marginRight: 14 }}>⬆️</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '600' }}>备份到云端</Text>
+            <Text style={{ color: '#6B7599', fontSize: 12 }}>Upload local data to Supabase</Text>
+          </View>
+          <Text style={{ color: '#6B7599', fontSize: 18 }}>›</Text>
+        </TouchableOpacity>
+
+        {/* Download / Restore */}
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}
+          onPress={async () => {
+            if (!session) { Alert.alert('Not Logged In'); return; }
+            Alert.alert(
+              '恢复数据',
+              'This will replace local data with cloud data. Continue?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Restore', style: 'destructive',
+                  onPress: async () => {
+                    const res = await SyncService.pullDataFromCloud(session.user.id);
+                    if (res.success) {
+                      Alert.alert('Restored ✅', `Downloaded ${res.count} transactions.`);
+                      loadData();
+                    } else Alert.alert('Error', String(res.error));
+                  }
+                }
+              ]
+            );
+          }}
+        >
+          <Text style={{ fontSize: 22, marginRight: 14 }}>⬇️</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FFF', fontSize: 15, fontWeight: '600' }}>从云端恢复</Text>
+            <Text style={{ color: '#6B7599', fontSize: 12 }}>Download data from Supabase</Text>
+          </View>
+          <Text style={{ color: '#6B7599', fontSize: 18 }}>›</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Account Section */}
+      <Text style={{ color: '#8B95B0', fontSize: 13, fontWeight: 'bold', marginBottom: 10, marginLeft: 4 }}>👤 账户 Account</Text>
+      <View style={{ backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#334155' }}>
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}
+          onPress={() => {
+            Alert.alert(
+              '退出登录',
+              'Are you sure you want to sign out?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Sign Out', style: 'destructive', onPress: () => supabase.auth.signOut() }
+              ]
+            );
+          }}
+        >
+          <Text style={{ fontSize: 22, marginRight: 14 }}>🚪</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FF6B6B', fontSize: 15, fontWeight: '600' }}>退出登录</Text>
+            <Text style={{ color: '#6B7599', fontSize: 12 }}>Sign out from your account</Text>
+          </View>
+          <Text style={{ color: '#6B7599', fontSize: 18 }}>›</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* App Info */}
+      <View style={{ alignItems: 'center', marginTop: 20, marginBottom: 40 }}>
+        <Text style={{ color: '#6B7599', fontSize: 12 }}>MyBudget v1.0.0</Text>
+        <Text style={{ color: '#4B5563', fontSize: 11, marginTop: 4 }}>Made with ❤️</Text>
+      </View>
+    </ScrollView>
+  );
+
   // --- Render Bottom Navigation ---
   const renderBottomNav = () => (
     <View style={styles.bottomNav}>
@@ -2128,6 +2637,9 @@ export default function App() {
       </TouchableOpacity>
       <TouchableOpacity style={styles.navItem} onPress={() => setCurrentPage('stats')}>
         <Text style={[styles.navText, currentPage === 'stats' && styles.navTextActive]}>📊 统计</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.navItem} onPress={() => setCurrentPage('settings')}>
+        <Text style={[styles.navText, currentPage === 'settings' && styles.navTextActive]}>⚙️ 设置</Text>
       </TouchableOpacity>
     </View>
   );
@@ -2171,19 +2683,7 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
 
-                  {/* Sync Button (Debug) */}
-                  <TouchableOpacity
-                    style={{ padding: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, marginRight: 10 }}
-                    onPress={async () => {
-                      if (!session) { Alert.alert("Not Logged In"); return; }
-                      Alert.alert("Syncing...", "Uploading data to cloud...");
-                      const res = await SyncService.uploadLocalDataToCloud(session.user.id);
-                      if (res.success) Alert.alert("Success", "Manual Backup Complete!");
-                      else Alert.alert("Error", String(res.error));
-                    }}
-                  >
-                    <Text style={{ fontSize: 18 }}>☁️</Text>
-                  </TouchableOpacity>
+
 
                   {/* Budget Widget */}
                   <TouchableOpacity
@@ -2253,62 +2753,80 @@ export default function App() {
                       <Text style={{ color: '#888' }}>+ 定个小目标</Text>
                     </TouchableOpacity>
                   ) : (
-                    goals.map((goal) => {
-                      const progress = goal.targetAmount > 0 ? (goal.savedAmount / goal.targetAmount) : 0;
-                      const progressWidth = `${Math.min(progress * 100, 100)}%`;
-                      return (
-                        <TouchableOpacity key={goal.id}
-                          style={[styles.goalCard, { padding: 0 }]}
-                          onPress={() => {
-                            setActiveGoal(goal);
-                            setCurrentPage('goal_detail');
-                          }}
-                        >
-                          {goal.backgroundImage ? (
-                            <ImageBackground source={{ uri: goal.backgroundImage }} style={{ width: '100%', height: '100%' }} imageStyle={{ borderRadius: 20 }}>
-                              <LinearGradient
-                                colors={['transparent', 'rgba(0,0,0,0.8)']}
-                                style={{
-                                  position: 'absolute',
-                                  left: 0,
-                                  right: 0,
-                                  bottom: 0,
-                                  height: '70%',
-                                  borderRadius: 20,
-                                }}
-                              />
-                              <View style={{ flex: 1, padding: 16, backgroundColor: 'transparent', borderRadius: 20, justifyContent: 'space-between' }}>
+                    [...goals]
+                      .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+                      .map((goal) => {
+                        const goalTarget = goal.targetAmount || goal.target_amount || 0;
+                        const goalSaved = goal.savedAmount || goal.saved_amount || 0;
+                        const progress = goalTarget > 0 ? (goalSaved / goalTarget) : 0;
+                        const progressWidth = `${Math.min(progress * 100, 100)}%`;
+                        return (
+                          <TouchableOpacity key={goal.id}
+                            style={[styles.goalCard, { padding: 0, borderWidth: goal.pinned ? 2 : 0, borderColor: goal.pinned ? '#FBBF24' : 'transparent' }]}
+                            onPress={() => {
+                              setActiveGoal(goal);
+                              setCurrentPage('goal_detail');
+                            }}
+                            onLongPress={() => {
+                              const updatedGoals = goals.map(g =>
+                                g.id === goal.id ? { ...g, pinned: !g.pinned } : g
+                              );
+                              setGoals(updatedGoals);
+                              AsyncStorage.setItem(GOALS_KEY, JSON.stringify(updatedGoals));
+                              showAlert(
+                                goal.pinned ? '已取消置顶' : '已置顶 📌',
+                                goal.pinned ? `${goal.title} 已取消置顶` : `${goal.title} 已置顶到最前面`
+                              );
+                            }}
+                          >
+                            {goal.backgroundImage ? (
+                              <ImageBackground source={{ uri: goal.backgroundImage }} style={{ width: '100%', height: '100%' }} imageStyle={{ borderRadius: 20 }}>
+                                <LinearGradient
+                                  colors={['transparent', 'rgba(0,0,0,0.8)']}
+                                  style={{
+                                    position: 'absolute',
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    height: '70%',
+                                    borderRadius: 20,
+                                  }}
+                                />
+                                <View style={{ flex: 1, padding: 16, backgroundColor: 'transparent', borderRadius: 20, justifyContent: 'space-between' }}>
+                                  <View style={styles.goalHeader}>
+                                    <View>{goal.pinned && <Text style={{ fontSize: 14 }}>📌</Text>}</View>
+                                    <Text style={styles.goalAmount}>RM {goalSaved}</Text>
+                                  </View>
+                                  <View>
+                                    <Text style={styles.goalTitle}>{goal.title}</Text>
+                                    <Text style={styles.goalTarget}>目标: RM {goalTarget}</Text>
+                                    <View style={styles.progressBarBg}>
+                                      <View style={[styles.progressBarFill, { width: progressWidth }]} />
+                                    </View>
+                                  </View>
+                                </View>
+                              </ImageBackground>
+                            ) : (
+                              <View style={{ flex: 1, padding: 16, justifyContent: 'space-between' }}>
                                 <View style={styles.goalHeader}>
-                                  <View />
-                                  <Text style={styles.goalAmount}>RM {goal.savedAmount}</Text>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <Text style={{ fontSize: 24 }}>{goal.icon}</Text>
+                                    {goal.pinned && <Text style={{ fontSize: 14, marginLeft: 4 }}>📌</Text>}
+                                  </View>
+                                  <Text style={styles.goalAmount}>RM {goalSaved}</Text>
                                 </View>
                                 <View>
                                   <Text style={styles.goalTitle}>{goal.title}</Text>
-                                  <Text style={styles.goalTarget}>目标: RM {goal.targetAmount}</Text>
+                                  <Text style={styles.goalTarget}>目标: RM {goalTarget}</Text>
                                   <View style={styles.progressBarBg}>
                                     <View style={[styles.progressBarFill, { width: progressWidth }]} />
                                   </View>
                                 </View>
                               </View>
-                            </ImageBackground>
-                          ) : (
-                            <View style={{ flex: 1, padding: 16, justifyContent: 'space-between' }}>
-                              <View style={styles.goalHeader}>
-                                <Text style={{ fontSize: 24 }}>{goal.icon}</Text>
-                                <Text style={styles.goalAmount}>RM {goal.savedAmount}</Text>
-                              </View>
-                              <View>
-                                <Text style={styles.goalTitle}>{goal.title}</Text>
-                                <Text style={styles.goalTarget}>目标: RM {goal.targetAmount}</Text>
-                                <View style={styles.progressBarBg}>
-                                  <View style={[styles.progressBarFill, { width: progressWidth }]} />
-                                </View>
-                              </View>
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })
                   )}
                 </ScrollView>
 
@@ -2379,7 +2897,7 @@ export default function App() {
                                 <View style={styles.transactionInfo}>
                                   <Text style={styles.transactionTitle}>{item.title}</Text>
                                   <Text style={styles.transactionDate}>
-                                    {dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • <Text style={{ color: '#4A90E2' }}>{item.assetName}</Text>
+                                    {getTimeStr(item.date)} • <Text style={{ color: '#4A90E2' }}>{item.assetName}</Text>
                                   </Text>
                                 </View>
                                 <Text style={{
@@ -2423,6 +2941,7 @@ export default function App() {
           {currentPage === 'asset_detail' && renderAssetDetailScreen()}
           {currentPage === 'goal_detail' && renderGoalDetailScreen()}
           {currentPage === 'transaction_detail' && renderTransactionDetailScreen()}
+          {currentPage === 'settings' && renderSettingsScreen()}
         </View>
 
         {/* Footer Navigation */}

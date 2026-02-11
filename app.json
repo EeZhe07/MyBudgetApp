@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1A1040"
     },
     "ios": {
       "supportsTablet": true,
@@ -19,10 +19,25 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#4B0082"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.shingyeeang.mybudgetapp"
+      "package": "com.shingyeeang.mybudgetapp",
+      "scheme": "mybudgetapp",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "mybudgetapp"
+            }
+          ],
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -49,8 +64,8 @@
             {
               "name": "ActionWidget",
               "label": "Quick Add",
-              "minWidth": "60dp",
-              "minHeight": "60dp",
+              "minWidth": "110dp",
+              "minHeight": "110dp",
               "description": "Quickly add a transaction.",
               "previewImage": "./assets/adaptive-icon.png",
               "resizeMode": "horizontal|vertical",
