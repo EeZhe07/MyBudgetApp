@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1A1040"
+      "backgroundColor": "#FBF7EF"
     },
     "ios": {
       "supportsTablet": true,
@@ -19,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#4B0082"
+        "backgroundColor": "#005B54"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.shingyeeang.mybudgetapp",
@@ -56,7 +56,7 @@
               "label": "Budget Overview",
               "minWidth": "250dp",
               "minHeight": "110dp",
-              "description": "Shows today's expense and budget.",
+              "description": "Shows today's spending and the current monthly budget.",
               "previewImage": "./assets/adaptive-icon.png",
               "resizeMode": "horizontal|vertical",
               "updatePeriodMillis": 1800000
@@ -66,7 +66,7 @@
               "label": "Quick Add",
               "minWidth": "110dp",
               "minHeight": "110dp",
-              "description": "Quickly add a transaction.",
+              "description": "Opens expense entry.",
               "previewImage": "./assets/adaptive-icon.png",
               "resizeMode": "horizontal|vertical",
               "updatePeriodMillis": 1800000
@@ -74,7 +74,8 @@
           ]
         }
       ],
-      "expo-quick-actions"
+      "expo-quick-actions",
+      "expo-notifications"
     ]
   }
 }

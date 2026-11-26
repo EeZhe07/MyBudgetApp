@@ -1,0 +1,18 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.tngcapture'
+version = '1.0.0'
+
+android {
+  namespace 'expo.modules.tngcapture'
+  defaultConfig {
+    versionName '1.0.0'
+  }
+}
+
+expoModule {
+  canBePublished false
+}
